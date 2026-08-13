@@ -1,0 +1,3 @@
+pair_id,visible_path,infrared_path,dataset,split
+pair_001,data/raw/visible/001.png,data/raw/infrared/001.png,dataset_name,pilot
+pair_002,data/raw/visible/002.png,data/raw/infrared/002.png,dataset_name,test

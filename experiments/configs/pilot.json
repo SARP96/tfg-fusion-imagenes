@@ -1,0 +1,21 @@
+{
+  "id": "pilot-v1",
+  "status": "planned",
+  "description": "Prueba técnica corta; no usar como resultado formal.",
+  "baseImage": "average",
+  "decisionVariables": {
+    "radius": {"minimum": 1, "maximum": 15, "type": "integer"},
+    "contrastWeight": {"minimum": 0.1, "maximum": 2.0, "type": "real"}
+  },
+  "smpso": {
+    "particles": [4],
+    "generations": [10],
+    "archiveSize": 30,
+    "runsPerPairAndConfiguration": 2
+  },
+  "objectives": {
+    "entropy": "shannon-8bit-not-normalized",
+    "ssim": "global-average-vis-ir",
+    "direction": "maximize"
+  }
+}

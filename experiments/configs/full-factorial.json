@@ -1,0 +1,28 @@
+{
+  "id": "particles-generations-5x5-v1",
+  "status": "awaiting-methodology-approval",
+  "description": "Diseño factorial planificado para estudiar partículas y generaciones.",
+  "baseImage": "to-be-confirmed",
+  "decisionVariables": {
+    "radius": {"minimum": 1, "maximum": 15, "type": "integer"},
+    "contrastWeight": {"minimum": 0.1, "maximum": 2.0, "type": "real"}
+  },
+  "smpso": {
+    "particles": [4, 10, 20, 30, 40],
+    "generations": [10, 30, 50, 100, 150],
+    "archiveSize": 30,
+    "runsPerPairAndConfiguration": 30,
+    "c1Range": [1.5, 2.5],
+    "c2Range": [1.5, 2.5],
+    "inertiaRange": [0.1, 0.5],
+    "velocityLimit": "half-decision-variable-range"
+  },
+  "objectives": {
+    "entropy": "to-be-confirmed",
+    "ssim": "to-be-confirmed",
+    "direction": "maximize"
+  },
+  "performanceIndicators": ["hypervolume", "igd", "spacing", "runtime"],
+  "referenceFront": "to-be-confirmed",
+  "hypervolumeReferencePoint": "to-be-confirmed"
+}

@@ -1,0 +1,12 @@
+* text=auto eol=lf
+*.java text diff=java
+*.sh text eol=lf
+*.csv text eol=lf
+*.json text eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tif binary
+*.tiff binary
+*.pdf binary
+*.jar binary

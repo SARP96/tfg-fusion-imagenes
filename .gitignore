@@ -1,0 +1,36 @@
+# Java y Maven
+*.class
+*.jar
+target/
+build/
+out/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Instalaciones locales
+Fiji.app/
+fiji/
+
+# Datos locales. Solo se versionan manifiestos y documentación.
+data/raw/**
+data/processed/**
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Salidas masivas y temporales
+results/runs/
+results/images/
+results/tmp/
+*.log
+
+# Configuración privada/local
+.env
+.env.*
+local.properties
