@@ -34,10 +34,25 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
     private static final double L = 255.0;
 
     /** Constante de estabilidad para la comparacion de luminancia en SSIM. */
-    private static final double C1 = (0.01 * L) * (0.01 * L);
+    private static final double SSIM_C1 = (0.01 * L) * (0.01 * L);
 
     /** Constante de estabilidad para la comparacion de contraste/estructura en SSIM. */
-    private static final double C2 = (0.03 * L) * (0.03 * L);
+    private static final double SSIM_C2 = (0.03 * L) * (0.03 * L);
+
+    /*
+     * Parametros del SMPSO de referencia. PT-CLAHE informa los rangos de c1,
+     * c2, r1 y r2, y limita cada velocidad a la mitad del rango de su variable.
+     * La configuracion restante sigue la implementacion de referencia de jMetal.
+     */
+    static final double SMPSO_C1_MIN = 1.5;
+    static final double SMPSO_C1_MAX = 2.5;
+    static final double SMPSO_C2_MIN = 1.5;
+    static final double SMPSO_C2_MAX = 2.5;
+    static final double SMPSO_INERTIA_WEIGHT = 0.1;
+    static final double SMPSO_BOUNDARY_VELOCITY_CHANGE = -1.0;
+    static final int SMPSO_MUTATION_FREQUENCY = 6;
+    static final double SMPSO_MUTATION_PROBABILITY = 0.5; // 1 / 2 variables.
+    static final double SMPSO_MUTATION_DISTRIBUTION_INDEX = 20.0;
 
     /**
      * Punto de entrada ejecutado por Fiji al seleccionar el plugin.
@@ -220,7 +235,7 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
 
     /**
      * Nucleo del algoritmo: genera fusiones, evalua objetivos y aproxima el
-     * frente de Pareto mediante una variante de SMPSO.
+     * frente de Pareto mediante SMPSO con los operadores de referencia.
      */
     static class Optimizer {
         /** Imagen visible e infrarroja ya convertidas a escala de grises. */
@@ -248,6 +263,9 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
 
         /** Soluciones no dominadas conservadas durante la busqueda. */
         private final ArrayList<Solution> archive = new ArrayList<Solution>();
+
+        /** Cantidad de evaluaciones de la funcion multiobjetivo realizadas. */
+        private int evaluations;
 
         /**
          * Crea el optimizador con las imagenes y limites seleccionados.
@@ -289,38 +307,48 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         List<Solution> run() {
             Particle[] swarm = new Particle[swarmSize];
 
-            // Inicializa cada particula con posicion y velocidad aleatorias.
+            // La inicializacion de referencia usa posiciones aleatorias y velocidad cero.
             for (int i = 0; i < swarmSize; i++) {
                 double r = rMin + random.nextDouble() * (rMax - rMin);
                 double m = mMin + random.nextDouble() * (mMax - mMin);
-                double vr = signedRandom() * velocityLimitR();
-                double vm = signedRandom() * velocityLimitM();
                 Solution s = evaluate(r, m);
-                swarm[i] = new Particle(r, m, vr, vm, s);
+                swarm[i] = new Particle(r, m, 0.0, 0.0, s);
                 addToArchive(s);
             }
 
-            // En cada iteracion se mueve, muta, evalua y memoriza cada particula.
+            /*
+             * Actualizacion sincrona de referencia: todo el enjambre usa el mismo
+             * archivo de lideres; despues se mueve, muta y evalua por completo.
+             * Solo entonces se actualizan el archivo externo y los pbest.
+             */
             for (int it = 0; it < iterations; it++) {
                 computeCrowding(archive);
+
                 for (Particle p : swarm) {
                     Solution leader = selectLeader();
                     updateVelocity(p, leader);
-
-                    // x(t+1) = x(t) + v(t+1), limitada al espacio factible.
-                    p.rPosition = clamp(p.rPosition + p.rVelocity, rMin, rMax);
-                    p.mPosition = clamp(p.mPosition + p.mVelocity, mMin, mMax);
-                    mutate(p, it);
-
-                    Solution current = evaluate(p.rPosition, p.mPosition);
-
-                    // Sustituye pbest si la actual domina; si son incomparables,
-                    // el desempate aleatorio evita favorecer siempre la misma zona.
-                    if (dominates(current, p.best) || (!dominates(p.best, current) && random.nextBoolean())) {
-                        p.best = current;
-                    }
-                    addToArchive(current);
                 }
+
+                for (Particle p : swarm) updatePosition(p);
+
+                // SMPSO aplica mutacion polinomial a los indices 0, 6, 12, ...
+                for (int i = 0; i < swarm.length; i++) {
+                    if (shouldMutateParticle(i)) polynomialMutation(swarm[i]);
+                }
+
+                Solution[] current = new Solution[swarmSize];
+                for (int i = 0; i < swarmSize; i++) {
+                    current[i] = evaluate(swarm[i].rPosition, swarm[i].mPosition);
+                }
+
+                // El archivo se actualiza con el enjambre completo ya evaluado.
+                for (Solution solution : current) addToArchive(solution);
+
+                for (int i = 0; i < swarmSize; i++) {
+                    // Referencia: reemplaza pbest salvo que pbest domine a la actual.
+                    if (!dominates(swarm[i].best, current[i])) swarm[i].best = current[i];
+                }
+
                 IJ.showProgress(it + 1, iterations);
             }
 
@@ -384,6 +412,7 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
             // Ambos objetivos se formulan para maximizacion.
             double entropy = entropy(fused);
             double ssim = 0.5 * (ssim(fused, vis) + ssim(fused, ir));
+            evaluations++;
             return new Solution(r, m, entropy, ssim);
         }
 
@@ -393,20 +422,21 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
          * @param p particula que sera modificada
          * @param leader solucion del archivo que orienta el movimiento social
          */
-        private void updateVelocity(Particle p, Solution leader) {
-            // Coeficientes cognitivo/social en [1.5, 2.5) e inercia en [0.1, 0.5).
-            double c1 = 1.5 + random.nextDouble();
-            double c2 = 1.5 + random.nextDouble();
-            double w = 0.1 + 0.4 * random.nextDouble();
+        void updateVelocity(Particle p, Solution leader) {
+            // PT-CLAHE: c1,c2 en [1.5,2.5] y r1,r2 uniformes en [0,1].
+            double c1 = randomInRange(SMPSO_C1_MIN, SMPSO_C1_MAX);
+            double c2 = randomInRange(SMPSO_C2_MIN, SMPSO_C2_MAX);
+            double r1 = random.nextDouble();
+            double r2 = random.nextDouble();
             double constriction = constrictionCoefficient(c1 + c2);
 
-            // Inercia + atraccion a pbest + atraccion al lider.
-            p.rVelocity = constriction * (w * p.rVelocity
-                    + c1 * random.nextDouble() * (p.best.r - p.rPosition)
-                    + c2 * random.nextDouble() * (leader.r - p.rPosition));
-            p.mVelocity = constriction * (w * p.mVelocity
-                    + c1 * random.nextDouble() * (p.best.m - p.mPosition)
-                    + c2 * random.nextDouble() * (leader.m - p.mPosition));
+            // Se usan los mismos r1 y r2 para ambas dimensiones de la particula.
+            p.rVelocity = constriction * (SMPSO_INERTIA_WEIGHT * p.rVelocity
+                    + c1 * r1 * (p.best.r - p.rPosition)
+                    + c2 * r2 * (leader.r - p.rPosition));
+            p.mVelocity = constriction * (SMPSO_INERTIA_WEIGHT * p.mVelocity
+                    + c1 * r1 * (p.best.m - p.mPosition)
+                    + c2 * r2 * (leader.m - p.mPosition));
 
             // Restriccion de velocidad caracteristica de SMPSO.
             p.rVelocity = clamp(p.rVelocity, -velocityLimitR(), velocityLimitR());
@@ -414,56 +444,132 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         }
 
         /**
-         * Calcula el factor de constriccion publicado para SMPSO.
+         * Calcula la magnitud positiva del factor de constriccion de SMPSO.
          *
          * @param phi suma de los coeficientes cognitivo y social, c1 + c2
-         * @return 1 si phi <= 4; en otro caso, coeficiente de constriccion
+         * @return 1 si phi <= 4; en otro caso, coeficiente positivo menor que 1
          */
-        private double constrictionCoefficient(double phi) {
+        static double constrictionCoefficient(double phi) {
             if (phi <= 4.0) return 1.0;
-            return 2.0 / (2.0 - phi - Math.sqrt(phi * phi - 4.0 * phi));
+            double denominator = Math.abs(2.0 - phi - Math.sqrt(phi * phi - 4.0 * phi));
+            return 2.0 / denominator;
         }
 
         /**
-         * Introduce una perturbacion decreciente para recuperar diversidad.
+         * Actualiza la posicion y refleja la velocidad si se alcanza un limite.
          *
-         * <p>Se ejecuta cada seis iteraciones. Modifica r o m y su intensidad
-         * disminuye a medida que se acerca el final de la busqueda.</p>
-         *
-         * @param p particula cuya posicion puede ser mutada
-         * @param iteration indice de la iteracion actual, comenzando en cero
+         * @param p particula cuya posicion y velocidad seran modificadas
          */
-        private void mutate(Particle p, int iteration) {
-            if (iteration % 6 != 0) return;
-            double progress = iterations <= 1 ? 1.0 : (double) iteration / (double) (iterations - 1);
-            // Potencia 5: exploracion fuerte al inicio y ajuste fino al final.
-            double strength = Math.pow(1.0 - progress, 5.0);
-            if (random.nextBoolean()) {
-                p.rPosition = clamp(p.rPosition + signedRandom() * strength * (rMax - rMin), rMin, rMax);
-            } else {
-                p.mPosition = clamp(p.mPosition + signedRandom() * strength * (mMax - mMin), mMin, mMax);
+        void updatePosition(Particle p) {
+            p.rPosition += p.rVelocity;
+            if (p.rPosition < rMin) {
+                p.rPosition = rMin;
+                p.rVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
+            } else if (p.rPosition > rMax) {
+                p.rPosition = rMax;
+                p.rVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
+            }
+
+            p.mPosition += p.mVelocity;
+            if (p.mPosition < mMin) {
+                p.mPosition = mMin;
+                p.mVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
+            } else if (p.mPosition > mMax) {
+                p.mPosition = mMax;
+                p.mVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
             }
         }
 
         /**
-         * Selecciona un lider entre las regiones mas dispersas del frente.
+         * Indica si una particula recibe la mutacion de referencia.
          *
-         * @return solucion elegida aleatoriamente de la mitad con mayor crowding
+         * @param particleIndex indice de la particula, comenzando en cero
+         * @return {@code true} para los indices 0, 6, 12, ...
+         */
+        static boolean shouldMutateParticle(int particleIndex) {
+            return particleIndex % SMPSO_MUTATION_FREQUENCY == 0;
+        }
+
+        /**
+         * Aplica mutacion polinomial de referencia a las dos variables.
+         *
+         * <p>Cada variable se muta con probabilidad 1/n=0.5. El indice de
+         * distribucion 20 favorece cambios pequenos y permite saltos ocasionales.</p>
+         *
+         * @param p particula seleccionada por la frecuencia de mutacion
+         */
+        void polynomialMutation(Particle p) {
+            if (random.nextDouble() <= SMPSO_MUTATION_PROBABILITY) {
+                p.rPosition = polynomialMutatedValue(p.rPosition, rMin, rMax,
+                        SMPSO_MUTATION_DISTRIBUTION_INDEX, random.nextDouble());
+            }
+            if (random.nextDouble() <= SMPSO_MUTATION_PROBABILITY) {
+                p.mPosition = polynomialMutatedValue(p.mPosition, mMin, mMax,
+                        SMPSO_MUTATION_DISTRIBUTION_INDEX, random.nextDouble());
+            }
+        }
+
+        /**
+         * Calcula una coordenada mutada mediante el operador polinomial.
+         *
+         * @param value valor actual dentro de los limites
+         * @param lowerBound limite inferior
+         * @param upperBound limite superior
+         * @param distributionIndex indice eta que controla la magnitud del cambio
+         * @param randomValue numero uniforme en [0,1]
+         * @return valor mutado y reparado dentro de los limites
+         */
+        static double polynomialMutatedValue(double value, double lowerBound, double upperBound,
+                                             double distributionIndex, double randomValue) {
+            if (upperBound <= lowerBound) return lowerBound;
+
+            double boundedValue = clamp(value, lowerBound, upperBound);
+            double delta1 = (boundedValue - lowerBound) / (upperBound - lowerBound);
+            double delta2 = (upperBound - boundedValue) / (upperBound - lowerBound);
+            double mutationPower = 1.0 / (distributionIndex + 1.0);
+            double delta;
+
+            if (randomValue <= 0.5) {
+                double xy = 1.0 - delta1;
+                double valueToPower = 2.0 * randomValue
+                        + (1.0 - 2.0 * randomValue) * Math.pow(xy, distributionIndex + 1.0);
+                delta = Math.pow(valueToPower, mutationPower) - 1.0;
+            } else {
+                double xy = 1.0 - delta2;
+                double valueToPower = 2.0 * (1.0 - randomValue)
+                        + 2.0 * (randomValue - 0.5) * Math.pow(xy, distributionIndex + 1.0);
+                delta = 1.0 - Math.pow(valueToPower, mutationPower);
+            }
+
+            return clamp(boundedValue + delta * (upperBound - lowerBound), lowerBound, upperBound);
+        }
+
+        /**
+         * Selecciona un lider mediante torneo binario por crowding.
+         *
+         * @return solucion con mayor crowding; si empatan, una de ellas al azar
          * @throws IllegalStateException si aun no existe ninguna solucion en el archivo
          */
-        private Solution selectLeader() {
+        Solution selectLeader() {
             if (archive.isEmpty()) throw new IllegalStateException("Archivo Pareto vacio");
-            computeCrowding(archive);
-            ArrayList<Solution> sorted = new ArrayList<Solution>(archive);
-            Collections.sort(sorted, new Comparator<Solution>() {
-                @Override
-                public int compare(Solution a, Solution b) {
-                    return Double.compare(b.crowding, a.crowding);
-                }
-            });
-            // Favorece diversidad sin elegir siempre el mismo extremo.
-            int limit = Math.max(1, sorted.size() / 2);
-            return sorted.get(random.nextInt(limit));
+            Solution first = archive.get(random.nextInt(archive.size()));
+            Solution second = archive.get(random.nextInt(archive.size()));
+            return selectByCrowding(first, second, random);
+        }
+
+        /**
+         * Resuelve un torneo de crowding sin introducir sesgo por orden.
+         *
+         * @param first primera candidata
+         * @param second segunda candidata
+         * @param randomGenerator generador usado solamente si existe empate
+         * @return candidata con mayor crowding o una seleccion aleatoria al empatar
+         */
+        static Solution selectByCrowding(Solution first, Solution second, Random randomGenerator) {
+            int comparison = Double.compare(first.crowding, second.crowding);
+            if (comparison > 0) return first;
+            if (comparison < 0) return second;
+            return randomGenerator.nextBoolean() ? first : second;
         }
 
         /**
@@ -522,21 +628,28 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
          * @return magnitud maxima permitida para la velocidad del radio
          */
         private double velocityLimitR() {
-            return Math.max(1.0, 0.5 * (rMax - rMin));
+            return 0.5 * (rMax - rMin);
         }
 
         /**
          * @return magnitud maxima permitida para la velocidad del peso
          */
         private double velocityLimitM() {
-            return Math.max(0.0001, 0.5 * (mMax - mMin));
+            return 0.5 * (mMax - mMin);
         }
 
         /**
-         * @return numero pseudoaleatorio uniforme dentro de [-1, 1)
+         * @return cantidad de evaluaciones realizadas durante la ejecucion
          */
-        private double signedRandom() {
-            return 2.0 * random.nextDouble() - 1.0;
+        int getEvaluations() {
+            return evaluations;
+        }
+
+        /**
+         * Genera un numero uniforme dentro de un intervalo semiabierto.
+         */
+        private double randomInRange(double minimum, double maximum) {
+            return minimum + random.nextDouble() * (maximum - minimum);
         }
     }
 
@@ -813,9 +926,9 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         varB /= denom;
         cov /= denom;
 
-        // Forma simplificada de SSIM con C1 y C2 para estabilidad numerica.
-        return ((2.0 * meanA * meanB + C1) * (2.0 * cov + C2))
-                / ((meanA * meanA + meanB * meanB + C1) * (varA + varB + C2));
+        // Forma simplificada de SSIM con sus constantes de estabilidad numerica.
+        return ((2.0 * meanA * meanB + SSIM_C1) * (2.0 * cov + SSIM_C2))
+                / ((meanA * meanA + meanB * meanB + SSIM_C1) * (varA + varB + SSIM_C2));
     }
 
     /**

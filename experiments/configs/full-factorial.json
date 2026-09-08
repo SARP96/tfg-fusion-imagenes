@@ -14,8 +14,18 @@
     "runsPerPairAndConfiguration": 30,
     "c1Range": [1.5, 2.5],
     "c2Range": [1.5, 2.5],
-    "inertiaRange": [0.1, 0.5],
-    "velocityLimit": "half-decision-variable-range"
+    "r1Range": [0.0, 1.0],
+    "r2Range": [0.0, 1.0],
+    "inertiaWeight": 0.1,
+    "velocityLimit": "half-decision-variable-range",
+    "boundaryVelocityChange": -1.0,
+    "leaderSelection": "binary-crowding-tournament-random-tie",
+    "mutation": {
+      "type": "polynomial",
+      "particleFrequency": 6,
+      "probabilityPerVariable": 0.5,
+      "distributionIndex": 20.0
+    }
   },
   "objectives": {
     "entropy": "to-be-confirmed",

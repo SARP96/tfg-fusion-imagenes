@@ -35,6 +35,17 @@ en un histograma de 256 niveles y SSIM global. El protocolo definitivo debe
 decidir si se reemplazará por entropía normalizada y SSIM local antes de generar
 resultados formales.
 
+## SMPSO implementado
+
+El núcleo utiliza actualización síncrona, archivo externo acotado por crowding,
+torneo binario para seleccionar líderes, velocidad máxima igual a la mitad del
+rango de cada variable y mutación polinomial. Las velocidades comienzan en cero;
+al alcanzar un límite, la posición se repara y la velocidad se refleja.
+
+La configuración y sus fuentes se detallan en
+`docs/correcciones-smpso-referencia.md`. Estas correcciones no cambian la
+ecuación de fusión ni la definición actual de los objetivos.
+
 ## Supuestos de entrada
 
 - Las imágenes representan el mismo campo de visión.

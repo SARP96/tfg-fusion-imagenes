@@ -26,17 +26,21 @@ La versión `0.1.0-SNAPSHOT` incluye:
 
 - Ejecución interactiva como plugin de Fiji/ImageJ.
 - Fusión Top-Hat con imagen base promedio, visible o infrarroja.
-- Optimización aproximada mediante una variante de SMPSO.
+- SMPSO alineado con los operadores de referencia: actualización síncrona,
+  velocidad restringida, torneo de líderes y mutación polinomial.
 - Archivo externo no dominado y distancia de crowding.
 - Entropía de Shannon y SSIM global.
 - Semilla configurable para reproducir una corrida.
 - Tabla, gráfico y reconstrucción opcional de soluciones Pareto.
-- Pruebas unitarias iniciales de métricas y dominancia.
+- Pruebas unitarias del núcleo, reproducibilidad y operadores SMPSO.
 
 Todavía no están implementados el SSIM local, la ejecución batch de 30 corridas,
 el frente consolidado ni los indicadores HV, IGD y Spacing. Esos elementos se
 encuentran documentados como trabajo planificado y no deben presentarse como
 funcionalidades terminadas.
+
+Las correcciones y parámetros adoptados para el algoritmo se explican en
+`docs/correcciones-smpso-referencia.md`.
 
 ## Requisitos
 
