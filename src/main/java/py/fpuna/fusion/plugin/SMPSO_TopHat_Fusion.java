@@ -2,6 +2,7 @@ package py.fpuna.fusion.plugin;
 
 import ij.IJ;
 import ij.ImagePlus;
+import ij.Prefs;
 import ij.WindowManager;
 import ij.gui.GenericDialog;
 import ij.gui.Plot;
@@ -170,7 +171,7 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
      * @param imp imagen de entrada, que puede tener otro tipo de pixel
      * @return copia independiente como {@link FloatProcessor}
      */
-    private FloatProcessor toGrayFloat(ImagePlus imp) {
+    static FloatProcessor toGrayFloat(ImagePlus imp) {
         // convertToByte(true) escala el rango visible a 8 bits antes de pasar a float.
         ImageProcessor ip = imp.getProcessor().convertToByte(true).convertToFloatProcessor();
         FloatProcessor fp = (FloatProcessor) ip.duplicate();
@@ -234,20 +235,134 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
     }
 
     /**
+     * Precalcula y conserva los mapas Top-Hat (WTH/BTH, VIS/IR) para cada
+     * radio entero factible de un par de imagenes.
+     *
+     * <p>{@code r} solo toma {@code rMax-rMin+1} valores enteros posibles y la
+     * morfologia no depende de {@code m}. Calcularla una sola vez por par y
+     * reutilizarla en todas las evaluaciones (de una corrida o de muchas
+     * corridas/configuraciones sobre el mismo par, como hace {@link BatchRunner})
+     * evita repetir la parte mas costosa de {@code fuse} en cada evaluacion.</p>
+     *
+     * <p>Una vez construida, la instancia es inmutable y de solo lectura, por lo
+     * que puede compartirse entre hilos sin sincronizacion adicional.</p>
+     */
+    static class FusionCache {
+        final FloatProcessor vis;
+        final FloatProcessor ir;
+        final int baseMode;
+        final int width;
+        final int height;
+        final int rMin;
+        final int rMax;
+        final double mMin;
+        final double mMax;
+
+        private final FloatProcessor[] wthIrByR;
+        private final FloatProcessor[] wthVisByR;
+        private final FloatProcessor[] bthIrByR;
+        private final FloatProcessor[] bthVisByR;
+
+        /**
+         * Precalcula la morfologia para todo el rango factible de {@code r}.
+         *
+         * @param vis imagen visible en escala de grises
+         * @param ir imagen infrarroja en escala de grises
+         * @param baseMode seleccion de la imagen base
+         * @param rMin radio minimo permitido
+         * @param rMax radio maximo permitido
+         * @param mMin peso minimo permitido
+         * @param mMax peso maximo permitido
+         */
+        FusionCache(FloatProcessor vis, FloatProcessor ir, int baseMode,
+                    int rMin, int rMax, double mMin, double mMax) {
+            this.vis = vis;
+            this.ir = ir;
+            this.baseMode = baseMode;
+            this.width = vis.getWidth();
+            this.height = vis.getHeight();
+            this.rMin = rMin;
+            this.rMax = rMax;
+            this.mMin = mMin;
+            this.mMax = mMax;
+
+            // RankFilters coordina sus propios hilos con contadores atomicos pensados
+            // para ser accionados desde PlugInFilterRunner. Invocado directamente (como
+            // aqui) con mas de un hilo puede bloquearse o dejar hilos activos. Se fuerza
+            // un solo hilo y el paralelismo se hace afuera, entre corridas independientes.
+            Prefs.setThreads(1);
+
+            this.wthIrByR = new FloatProcessor[rMax + 1];
+            this.wthVisByR = new FloatProcessor[rMax + 1];
+            this.bthIrByR = new FloatProcessor[rMax + 1];
+            this.bthVisByR = new FloatProcessor[rMax + 1];
+            for (int r = rMin; r <= rMax; r++) {
+                wthIrByR[r] = whiteTopHat(ir, r);
+                wthVisByR[r] = whiteTopHat(vis, r);
+                bthIrByR[r] = blackTopHat(ir, r);
+                bthVisByR[r] = blackTopHat(vis, r);
+            }
+        }
+
+        /**
+         * Genera una imagen fusionada reutilizando la morfologia precalculada.
+         *
+         * @param r radio del elemento estructurante; debe estar en [rMin, rMax]
+         * @param m peso aplicado a los detalles Top-Hat
+         * @return nueva imagen Ifus en el rango [0, 255]
+         */
+        FloatProcessor fuse(int r, double m) {
+            FloatProcessor out = new FloatProcessor(width, height);
+            float[] irPix = (float[]) ir.getPixels();
+            float[] visPix = (float[]) vis.getPixels();
+            float[] wIr = (float[]) wthIrByR[r].getPixels();
+            float[] wVis = (float[]) wthVisByR[r].getPixels();
+            float[] bIr = (float[]) bthIrByR[r].getPixels();
+            float[] bVis = (float[]) bthVisByR[r].getPixels();
+            float[] fused = (float[]) out.getPixels();
+
+            for (int i = 0; i < fused.length; i++) {
+                double base;
+                if (baseMode == 1) base = visPix[i];
+                else if (baseMode == 2) base = irPix[i];
+                else base = 0.5 * (visPix[i] + irPix[i]);
+
+                double value = base + m * Math.max(wIr[i], wVis[i]) - m * Math.max(bIr[i], bVis[i]);
+                fused[i] = (float) clamp(value, 0.0, 255.0);
+            }
+            return out;
+        }
+
+        /**
+         * Evalua una posicion del enjambre reutilizando la cache de morfologia.
+         *
+         * <p>No incrementa ningun contador: es un metodo sin estado mutable,
+         * seguro para invocarse concurrentemente desde varios {@link Optimizer}
+         * que comparten esta misma cache.</p>
+         *
+         * @param rPosition posicion continua del radio; se redondea a entero
+         * @param mPosition posicion continua del peso de contraste
+         * @return solucion con parametros factibles, entropia y SSIM promedio
+         */
+        Solution evaluate(double rPosition, double mPosition) {
+            int r = (int) Math.round(clamp(rPosition, rMin, rMax));
+            double m = clamp(mPosition, mMin, mMax);
+            FloatProcessor fused = fuse(r, m);
+            double entropy = entropy(fused);
+            double ssim = 0.5 * (ssim(fused, vis) + ssim(fused, ir));
+            return new Solution(r, m, entropy, ssim);
+        }
+    }
+
+    /**
      * Nucleo del algoritmo: genera fusiones, evalua objetivos y aproxima el
      * frente de Pareto mediante SMPSO con los operadores de referencia.
      */
     static class Optimizer {
-        /** Imagen visible e infrarroja ya convertidas a escala de grises. */
-        private final FloatProcessor vis;
-        private final FloatProcessor ir;
+        /** Morfologia precalculada del par de imagenes; de solo lectura. */
+        private final FusionCache cache;
 
-        /** Modo de imagen base: 0 = promedio, 1 = VIS, 2 = IR. */
-        private final int baseMode;
-        private final int width;
-        private final int height;
-
-        /** Limites del espacio de decision (r, m). */
+        /** Limites del espacio de decision (r, m), copiados de la cache. */
         private final int rMin;
         private final int rMax;
         private final double mMin;
@@ -268,7 +383,34 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         private int evaluations;
 
         /**
-         * Crea el optimizador con las imagenes y limites seleccionados.
+         * Crea el optimizador a partir de una cache de morfologia ya calculada.
+         *
+         * <p>Pensado para reutilizar la misma cache (un par de imagenes) en
+         * muchas corridas y configuraciones distintas, como hace
+         * {@link BatchRunner}: la morfologia se calcula una unica vez por par.</p>
+         *
+         * @param cache morfologia precalculada del par de imagenes
+         * @param swarmSize cantidad de particulas
+         * @param iterations cantidad de iteraciones
+         * @param archiveSize capacidad maxima del archivo Pareto
+         * @param seed semilla usada para reproducir la ejecucion
+         */
+        Optimizer(FusionCache cache, int swarmSize, int iterations, int archiveSize, long seed) {
+            this.cache = cache;
+            this.rMin = cache.rMin;
+            this.rMax = cache.rMax;
+            this.mMin = cache.mMin;
+            this.mMax = cache.mMax;
+            this.swarmSize = swarmSize;
+            this.iterations = iterations;
+            this.archiveSize = archiveSize;
+            this.random = new Random(seed);
+        }
+
+        /**
+         * Constructor de conveniencia: crea su propia cache de morfologia para
+         * un unico par de imagenes. Preserva el comportamiento y la firma que
+         * ya usaban el plugin interactivo y las pruebas existentes.
          *
          * @param vis imagen visible en escala de grises
          * @param ir imagen infrarroja en escala de grises
@@ -284,19 +426,8 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
          */
         Optimizer(FloatProcessor vis, FloatProcessor ir, int baseMode, int rMin, int rMax, double mMin, double mMax,
                   int swarmSize, int iterations, int archiveSize, long seed) {
-            this.vis = vis;
-            this.ir = ir;
-            this.baseMode = baseMode;
-            this.width = vis.getWidth();
-            this.height = vis.getHeight();
-            this.rMin = rMin;
-            this.rMax = rMax;
-            this.mMin = mMin;
-            this.mMax = mMax;
-            this.swarmSize = swarmSize;
-            this.iterations = iterations;
-            this.archiveSize = archiveSize;
-            this.random = new Random(seed);
+            this(new FusionCache(vis, ir, baseMode, rMin, rMax, mMin, mMax),
+                    swarmSize, iterations, archiveSize, seed);
         }
 
         /**
@@ -359,61 +490,29 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         }
 
         /**
-         * Genera una imagen fusionada para una combinacion concreta de parametros.
+         * Genera una imagen fusionada para una combinacion concreta de parametros,
+         * reutilizando la morfologia precalculada en la cache.
          *
          * @param r radio del elemento estructurante
          * @param m peso aplicado a los detalles Top-Hat
          * @return nueva imagen Ifus en el rango [0, 255]
          */
         FloatProcessor fuse(int r, double m) {
-            // Extrae por separado detalles brillantes (WTH) y oscuros (BTH).
-            FloatProcessor wthIr = whiteTopHat(ir, r);
-            FloatProcessor wthVis = whiteTopHat(vis, r);
-            FloatProcessor bthIr = blackTopHat(ir, r);
-            FloatProcessor bthVis = blackTopHat(vis, r);
-            FloatProcessor out = new FloatProcessor(width, height);
-
-            float[] irPix = (float[]) ir.getPixels();
-            float[] visPix = (float[]) vis.getPixels();
-            float[] wIr = (float[]) wthIr.getPixels();
-            float[] wVis = (float[]) wthVis.getPixels();
-            float[] bIr = (float[]) bthIr.getPixels();
-            float[] bVis = (float[]) bthVis.getPixels();
-            float[] fused = (float[]) out.getPixels();
-
-            // Aplica la ecuacion de fusion pixel a pixel.
-            for (int i = 0; i < fused.length; i++) {
-                double base;
-                if (baseMode == 1) base = visPix[i];
-                else if (baseMode == 2) base = irPix[i];
-                else base = 0.5 * (visPix[i] + irPix[i]);
-
-                // Ifus = Ib + m*max(WTH_IR,WTH_VIS) - m*max(BTH_IR,BTH_VIS).
-                double value = base + m * Math.max(wIr[i], wVis[i]) - m * Math.max(bIr[i], bVis[i]);
-                // Evita intensidades invalidas y saturacion fuera de 8 bits.
-                fused[i] = (float) clamp(value, 0.0, 255.0);
-            }
-            return out;
+            return cache.fuse(r, m);
         }
 
         /**
-         * Evalua una posicion del enjambre.
+         * Evalua una posicion del enjambre delegando en la cache compartida y
+         * llevando la cuenta de evaluaciones de esta corrida en particular.
          *
          * @param rPosition posicion continua del radio; se redondea a entero
          * @param mPosition posicion continua del peso de contraste
          * @return solucion con parametros factibles, entropia y SSIM promedio
          */
         private Solution evaluate(double rPosition, double mPosition) {
-            // La particula se mueve en continuo, pero la morfologia requiere r entero.
-            int r = (int) Math.round(clamp(rPosition, rMin, rMax));
-            double m = clamp(mPosition, mMin, mMax);
-            FloatProcessor fused = fuse(r, m);
-
-            // Ambos objetivos se formulan para maximizacion.
-            double entropy = entropy(fused);
-            double ssim = 0.5 * (ssim(fused, vis) + ssim(fused, ir));
+            Solution solution = cache.evaluate(rPosition, mPosition);
             evaluations++;
-            return new Solution(r, m, entropy, ssim);
+            return solution;
         }
 
         /**

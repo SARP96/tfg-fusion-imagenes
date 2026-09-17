@@ -2,12 +2,13 @@
 
 ## Estado actual
 
-La implementación inicial se conserva en una sola clase para mantener el
+La implementación interactiva se conserva en una sola clase para mantener el
 comportamiento ya probado en Fiji:
 
 ```text
 SMPSO_TopHat_Fusion
 ├── interfaz y validación de entradas
+├── FusionCache (morfología Top-Hat precalculada por par, ver docs/optimizacion-batch.md)
 ├── Optimizer
 ├── Particle
 ├── Solution
@@ -18,6 +19,11 @@ SMPSO_TopHat_Fusion
 
 La clase se ubica en el paquete `py.fpuna.fusion.plugin` y se registra mediante
 `src/main/resources/plugins.config`.
+
+`BatchRunner`, en el mismo paquete, es el primer paso hacia la separación
+descrita más abajo: reutiliza `Optimizer`/`FusionCache` para ejecutar el
+diseño factorial fuera de Fiji, sin tocar la definición de los objetivos ni
+del algoritmo. Ver `docs/optimizacion-batch.md`.
 
 ## Arquitectura objetivo
 

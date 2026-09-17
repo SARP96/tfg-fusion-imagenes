@@ -1,0 +1,125 @@
+# Resultados: piloto batch sobre CT-MRI (184 pares)
+
+## Qué es esto y qué NO es
+
+Esta es la primera ejecución completa de extremo a extremo de `BatchRunner`
+sobre un dataset real, para validar que la automatización batch (`FusionCache`
++ ejecución paralela) funciona correctamente a la escala del diseño factorial
+completo. **No es el resultado formal de la tesis.**
+
+`docs/methodology.md` ya lo advierte explícitamente:
+
+> "Los pares CT-MRI pueden utilizarse como validación complementaria de
+> fusión multimodal, pero no sustituyen la evaluación VIS-IR indicada en el
+> objetivo de la tesis."
+
+Ninguna decisión pendiente de `docs/decisions.md` (dataset VIS-IR principal,
+SSIM local/global, normalización, frente de referencia, presupuesto
+experimental) queda resuelta por esta corrida. Es una prueba de ingeniería
+(¿el batch runner soporta el volumen real de trabajo sin caerse?), no una
+prueba metodológica.
+
+## Configuración de la corrida
+
+| Campo | Valor |
+|---|---|
+| Dataset | `CT-MRI.zip` (fuente externa al repositorio), 184 pares, emparejados por nombre de archivo |
+| Ubicación local | `data/raw/ct/`, `data/raw/mri/` (excluido de Git) |
+| Manifiesto | [experiments/manifests/ct-mri-184-pairs.csv](../experiments/manifests/ct-mri-184-pairs.csv) — columna `dataset=ct-mri-complementario` |
+| Configuración | `experiments/configs/full-factorial.json` (particulas × generaciones completo, 25 configuraciones) |
+| Corridas por configuración | 30 (5.520 corridas por configuración, 138.000 en total) |
+| Semillas | Derivadas automáticamente (`seed_source=derived`), **no** pre-registradas — válido para un piloto, no para una serie formal |
+| Base image (`Ib`) | `to-be-confirmed` en el config → se usó el promedio VIS/IR por defecto (con aviso impreso), porque esa decisión sigue pendiente |
+| Commit base | `c710f4ae8a4265b13bba79200b9a7fbb975ca34c` (el propio `BatchRunner`/`FusionCache` corrieron sin commitear todavía sobre este commit — actualizar este dato cuando se commitee) |
+| Entorno | 8 hilos, 8 núcleos disponibles, ejecutado desde IntelliJ IDEA 2025.3.2 (JDK 18.0.2.1 en runtime; bytecode compilado a Java 8) |
+| Rango de `r` / `m` | `[1,15]` / `[0.1,2.0]` |
+
+## Resultado: 138.000/138.000 corridas, 0 fallidas
+
+```text
+corridas completadas: 138.000
+corridas fallidas:     0
+evaluaciones totales: 198.057.600
+```
+
+No hubo pares que fallaran al cargar ni corridas con excepciones — el
+`FusionCache` compartido entre 8 hilos y 25×30 corridas por par se sostuvo
+sin errores durante toda la ejecución. Los datos no tienen valores `NaN` ni
+infinitos; entropía observada en `[1,8958, 5,4670]` (por debajo del máximo
+teórico de 8, esperable en imágenes médicas con rango dinámico limitado) y
+SSIM en `[0,5551, 0,8702]`.
+
+## Tiempo real vs. proyectado
+
+| | Proyectado (benchmark aislado) | Real (corrida completa) |
+|---|---:|---:|
+| Tiempo total (8 hilos) | ~6,8 h | **17,15 h** |
+| ms/evaluación implícito | 0,989 ms | ~2,49 ms |
+
+El tiempo real fue ~2,5× el proyectado. Dos causas identificadas al revisar
+`runs.csv`:
+
+1. **59 corridas (0,04 %) con estancamientos anómalos** (duración > 1 minuto,
+   hasta 41,4 minutos, cuando la duración normal más alta observada es de
+   pocos segundos). La corrida atravesó la madrugada (09:35 a 02:44 del día
+   siguiente); es consistente con que el equipo haya entrado en reposo o
+   tuviera carga externa puntual durante ese lapso — sin esos 59 casos, el
+   total hubiese sido ~14,96 h en vez de 17,15 h.
+2. **Incluso descontando esos casos, el paralelismo real logrado fue ~3,6×**
+   sobre 8 hilos (no 8×). `fuse()`, la entropía y el SSIM son bucles simples
+   sobre arreglos `float[]` — trabajo limitado por ancho de banda de memoria,
+   no por cómputo puro. Ocho hilos leyendo/escribiendo arreglos en paralelo
+   compiten por el mismo bus de memoria y no escalan linealmente en hardware
+   real, más el hecho de que la máquina se usó con normalidad (IDE, otros
+   programas) durante esas horas.
+
+**Implicación práctica**: para planificar la serie formal, usar ~2,5 ms por
+evaluación (no 1 ms) como referencia realista de este tipo de hardware, y
+sumar margen para estancamientos si la corrida es larga y desatendida.
+`docs/optimizacion-batch.md` tiene el detalle del benchmark aislado original;
+este documento son los números de una corrida real y sostenida.
+
+## Resultados agregados por configuración
+
+Tabla completa (todas las 5.520 corridas de cada una de las 25
+configuraciones, sin selección manual) en
+[results/summaries/ct-mri-piloto-20260916-por-config.csv](../results/summaries/ct-mri-piloto-20260916-por-config.csv).
+Resumen:
+
+| Partículas | Generaciones | Evaluaciones/corrida | Duración promedio | Tamaño de frente promedio |
+|---:|---:|---:|---:|---:|
+| 4 | 10 | 44 | 0,10 s | 13,4 |
+| 4 | 150 | 604 | 3,11 s* | 27,4 |
+| 20 | 50 | 1.020 | 2,22 s | 28,1 |
+| 30 | 100 | 3.030 | 10,73 s* | 28,4 |
+| 40 | 150 | 6.040 | 16,39 s* | 28,5 |
+
+*Promedio afectado por los estancamientos anómalos descritos arriba; ver
+mínimos/máximos en el CSV completo para la distribución real.
+
+Patrón esperado y consistente: a mayor presupuesto de evaluaciones
+(partículas × generaciones), el frente no dominado se acerca más al límite
+del archivo externo (`archiveSize=30`), reflejando mejor cobertura del
+espacio de búsqueda. Con `P4_G10` (presupuesto mínimo) el frente promedio es
+notablemente más chico (13,4).
+
+## Dónde están los datos completos
+
+`results/runs/20260916-053543/` contiene `runs.csv` (138.000 filas, 20 MB) y
+`fronts.csv` (3.669.688 filas de soluciones no dominadas, 269 MB) —
+**quedan solo en la máquina local**, excluidos de Git por
+`results/runs/` en `.gitignore`, tal como indica `results/README.md`. Lo que
+se sube al repositorio es este documento más el resumen agregado en
+`results/summaries/`.
+
+## Próximos pasos sugeridos
+
+- Si se decide adoptar CT-MRI como validación complementaria formal (no
+  reemplaza VIS-IR), registrar esa decisión en `docs/decisions.md` con fecha
+  y aprobación, y generar un `seeds.csv` real para esa serie en vez de
+  semillas derivadas.
+- Para la serie formal VIS-IR, replanificar el tiempo esperado con ~2,5
+  ms/evaluación en vez de la cifra optimista del benchmark aislado.
+- Considerar guardar checkpoints o resultados parciales por pair para
+  corridas muy largas y desatendidas, dado que se observaron estancamientos
+  de hasta 41 minutos en corridas individuales durante esta ejecución.

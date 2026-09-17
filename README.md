@@ -87,6 +87,41 @@ Plugins > SMPSO TopHat Fusion > SMPSO Top-Hat Fusion
 Abra previamente una imagen visible y su correspondiente imagen infrarroja.
 Ambas deben estar registradas y tener el mismo ancho y alto.
 
+## Ejecución batch (sin Fiji)
+
+`BatchRunner` ejecuta el diseño factorial completo (todas las combinaciones
+de partículas/generaciones, con sus corridas) fuera de Fiji, en paralelo, y
+consume directamente los archivos de `experiments/configs` y
+`experiments/manifests`. Por cada par de imágenes calcula la morfología
+Top-Hat una sola vez (para cada `r` factible) y la reutiliza en todas las
+configuraciones y corridas de ese par; ver `docs/optimizacion-batch.md` para
+el detalle de esta optimización y de la paralelización.
+
+```bash
+mvn -q clean compile
+java -cp target/classes:<ruta-a-ij-1.54p.jar> py.fpuna.fusion.plugin.BatchRunner \
+    --config experiments/configs/pilot.json \
+    --manifest experiments/manifests/image-pairs-example.csv \
+    --seeds experiments/seeds/seeds-example.csv \
+    --out results/runs \
+    --threads 8
+```
+
+Genera, dentro de `results/runs/<fecha-hora>/` (excluido de Git):
+
+- `runs.csv`: una fila por corrida, con semilla, evaluaciones, duración,
+  tamaño del frente, hash del commit y estado (`OK`/`FAILED`).
+- `fronts.csv`: una fila por solución no dominada (`r`, `m`, entropía, SSIM).
+- `metadata.txt`: configuración, manifiesto, semillas, commit e hilos usados.
+
+Las semillas ausentes en el archivo indicado se derivan de forma
+determinística y se marcan como `derived` (no `file`) en `runs.csv`: sirven
+para corridas exploratorias, no para la serie formal de 30 corridas, que debe
+usar semillas pre-registradas en `experiments/seeds`.
+
+Opciones útiles para pruebas rápidas: `--pairs id1,id2` (filtra pares) y
+`--max-runs N` (limita el total de corridas).
+
 ## Organización del proyecto
 
 - `src/main/java`: código fuente del plugin.
