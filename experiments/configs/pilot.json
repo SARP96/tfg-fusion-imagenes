@@ -1,11 +1,12 @@
 {
   "id": "pilot-v1",
-  "status": "planned",
+  "status": "ready",
   "description": "Prueba técnica corta; no usar como resultado formal.",
   "baseImage": "average",
   "decisionVariables": {
     "radius": {"minimum": 1, "maximum": 15, "type": "integer"},
-    "contrastWeight": {"minimum": 0.1, "maximum": 2.0, "type": "real"}
+    "whiteTopHatWeight": {"minimum": 0.35, "maximum": 2.0, "type": "real"},
+    "blackTopHatWeight": {"minimum": 0.35, "maximum": 2.0, "type": "real"}
   },
   "smpso": {
     "particles": [4],
@@ -14,8 +15,12 @@
     "runsPerPairAndConfiguration": 2
   },
   "objectives": {
-    "entropy": "shannon-8bit-not-normalized",
-    "ssim": "global-average-vis-ir",
+    "entropy": "shannon-8bit-normalized-by-8",
+    "ssim": "global-average-ct-mri",
     "direction": "maximize"
-  }
+  },
+  "performanceIndicators": ["hypervolume", "igd", "runtime"],
+  "metricNormalization": "empirical-ideal-nadir-per-pair",
+  "referenceFront": "nondominated-union-all-configurations-and-runs-per-pair",
+  "hypervolumeReferencePoint": [1.1, 1.1]
 }

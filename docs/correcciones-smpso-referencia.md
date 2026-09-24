@@ -2,18 +2,10 @@
 
 ## Objetivo y alcance
 
-Este documento explica las correcciones aplicadas al núcleo SMPSO antes de
-implementar el diseño experimental solicitado por los tutores. Los cambios
-afectan únicamente al comportamiento del optimizador. Se mantienen sin cambios:
-
-- Las variables de decisión `r` y `m`.
-- La ecuación de fusión Top-Hat.
-- La entropía de Shannon como primer objetivo.
-- El promedio de SSIM global como segundo objetivo.
-- La ejecución interactiva actual en Fiji.
-
-No se implementaron en esta etapa HV, IGD, Spacing, las 30 corridas, el frente
-consolidado ni el procesamiento automático del dataset.
+Este documento explica las correcciones aplicadas al núcleo SMPSO. Después de
+esa etapa, el proyecto amplió el vector de decisión a `(r,mWTH,mBTH)` e incorporó
+la ejecución batch, la entropía normalizada, HV e IGD. Esos cambios posteriores
+se describen en `docs/methodology.md` y no alteran los operadores aquí detallados.
 
 ## Fuentes utilizadas
 
@@ -59,7 +51,7 @@ línea por línea con otra versión de jMetal.
 | `Vmax_j` | `(xmax_j-xmin_j)/2` | Ecuaciones 7 y 8 de PT-CLAHE |
 | Cambio de velocidad en límites | `-1.0` | Configuración SMPSO de referencia |
 | Frecuencia de mutación | Índices divisibles por `6` | SMPSO de referencia |
-| Probabilidad de mutación | `1/n=0.5` por variable | Dos variables de decisión |
+| Probabilidad de mutación | `1/n=1/3` por variable | Tres variables de decisión |
 | Índice de distribución | `20` | Mutación polinomial usada con SMPSO en jMetal |
 
 El paper PT-CLAHE usa 100 partículas y 100 iteraciones para su experimento de
@@ -129,7 +121,7 @@ generador controlado por la semilla de la corrida.
 ## Mutación polinomial
 
 En cada generación se seleccionan por índice las partículas `0, 6, 12, ...`.
-Para cada una de sus dos variables se aplica mutación con probabilidad `0.5`.
+Para cada una de sus tres variables se aplica mutación con probabilidad `1/3`.
 
 El índice de distribución `eta=20` hace frecuentes los cambios pequeños y deja
 una probabilidad menor para desplazamientos grandes. El operador considera la
@@ -186,5 +178,4 @@ defendible, sin obligar a incorporar todo el framework al plugin.
 
 **¿Las correcciones garantizan mejores imágenes?** No por sí solas. Garantizan
 una implementación más consistente y reproducible. La calidad y estabilidad de
-los frentes se evaluarán después con las corridas independientes y los
-indicadores de desempeño aprobados para el diseño experimental.
+los frentes se evalúan mediante corridas independientes, HV e IGD.

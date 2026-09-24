@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="${1:-$ROOT/experiments/manifests/image-pairs-example.csv}"
-EXPECTED_HEADER="pair_id,visible_path,infrared_path,dataset,split"
+EXPECTED_HEADER="pair_id,ct_path,mri_path,dataset,split"
 
 if [[ ! -f "$MANIFEST" ]]; then
   echo "No existe el manifiesto: $MANIFEST" >&2
@@ -19,9 +19,9 @@ if [[ "$header" != "$EXPECTED_HEADER" ]]; then
 fi
 
 missing=0
-while IFS=, read -r pair_id visible_path infrared_path dataset split; do
+while IFS=, read -r pair_id ct_path mri_path dataset split; do
   [[ "$pair_id" == "pair_id" || -z "$pair_id" ]] && continue
-  for image_path in "$visible_path" "$infrared_path"; do
+  for image_path in "$ct_path" "$mri_path"; do
     if [[ ! -f "$ROOT/$image_path" ]]; then
       echo "Falta $pair_id: $image_path" >&2
       missing=$((missing + 1))

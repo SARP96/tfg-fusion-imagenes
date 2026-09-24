@@ -13,17 +13,20 @@ import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Ejecuta en modo batch el diseno factorial descrito en un archivo de
@@ -43,8 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <pre>
  * java -cp target/classes:&lt;ij.jar&gt; py.fpuna.fusion.plugin.BatchRunner \
  *     --config experiments/configs/full-factorial.json \
- *     --manifest experiments/manifests/image-pairs-example.csv \
- *     --seeds experiments/seeds/seeds-example.csv \
+ *     --manifest experiments/manifests/ct-mri-184-pairs.csv \
  *     --out results/runs \
  *     --threads 8
  * </pre>
@@ -66,6 +68,8 @@ public final class BatchRunner {
         Map<String, Long> seedFile = parsed.seedsPath == null
                 ? new HashMap<String, Long>()
                 : readSeeds(parsed.seedsPath);
+        SecureRandom seedGenerator = parsed.seedsPath == null ? new SecureRandom() : null;
+        Set<Long> generatedSeeds = parsed.seedsPath == null ? new HashSet<Long>() : null;
 
         if (pairs.isEmpty()) {
             System.err.println("El manifiesto no tiene pares para procesar: " + parsed.manifestPath);
@@ -84,23 +88,24 @@ public final class BatchRunner {
         int threads = parsed.threads > 0 ? parsed.threads : Runtime.getRuntime().availableProcessors();
 
         long totalRunsPlanned = (long) pairs.size() * configurations.size() * config.runsPerPairAndConfiguration;
+        long totalRunsTarget = parsed.maxRuns > 0
+                ? Math.min(totalRunsPlanned, parsed.maxRuns) : totalRunsPlanned;
         System.out.println("BatchRunner: " + pairs.size() + " par(es) x " + configurations.size()
                 + " configuracion(es) x " + config.runsPerPairAndConfiguration + " corrida(s) = "
                 + totalRunsPlanned + " corridas planificadas, " + threads + " hilo(s).");
 
         writeMetadata(new File(outDir, "metadata.txt"), parsed, config, pairs, configurations, gitCommit, threads);
 
-        File runsCsv = new File(outDir, "runs.csv");
-        File frontsCsv = new File(outDir, "fronts.csv");
-        RunWriter writer = new RunWriter(runsCsv, frontsCsv);
+        RunWriter writer = new RunWriter(outDir);
 
         ExecutorService pool = Executors.newFixedThreadPool(threads);
-        AtomicInteger completed = new AtomicInteger();
-        AtomicInteger failed = new AtomicInteger();
-        List<Future<?>> futures = new ArrayList<Future<?>>();
+        int completed = 0;
+        int failed = 0;
+        int scheduled = 0;
 
         try {
             for (Pair pair : pairs) {
+                if (scheduled >= totalRunsTarget) break;
                 SMPSO_TopHat_Fusion.FusionCache cache;
                 try {
                     cache = buildCache(pair, config);
@@ -110,43 +115,60 @@ public final class BatchRunner {
                     continue;
                 }
 
+                List<Future<RunResult>> futures = new ArrayList<Future<RunResult>>();
                 for (Configuration cfg : configurations) {
                     for (int run = 1; run <= config.runsPerPairAndConfiguration; run++) {
-                        long seed = resolveSeed(seedFile, pair.id, cfg, run);
-                        String seedSource = seedFile.containsKey(seedKey(pair.id, cfg, run)) ? "file" : "derived";
-                        RunTask task = new RunTask(pair, cfg, run, seed, seedSource, cache, gitCommit,
-                                writer, completed, failed, totalRunsPlanned);
-                        if (parsed.maxRuns > 0 && completed.get() + futures.size() >= parsed.maxRuns) {
-                            continue;
-                        }
+                        if (scheduled >= totalRunsTarget) break;
+                        long seed = resolveSeed(seedFile, seedGenerator, generatedSeeds,
+                                pair.id, cfg, run);
+                        String seedSource = parsed.seedsPath == null ? "generated" : "file";
+                        writer.writeSeed(pair, cfg, run, seed);
+                        RunTask task = new RunTask(pair, cfg, run, seed, seedSource, cache, gitCommit);
                         futures.add(pool.submit(task));
+                        scheduled++;
                     }
                 }
-            }
 
-            for (Future<?> f : futures) {
-                try {
-                    f.get();
-                } catch (Exception e) {
-                    // Cada RunTask ya registra sus propios errores; esto es una red de
-                    // seguridad para fallas inesperadas del framework de hilos.
-                    System.err.println("Corrida con error no controlado: " + e.getMessage());
+                List<RunResult> successfulRuns = new ArrayList<RunResult>();
+                for (Future<RunResult> future : futures) {
+                    RunResult result;
+                    try {
+                        result = future.get();
+                    } catch (Exception e) {
+                        failed++;
+                        System.err.println("Corrida con error no controlado: " + e.getMessage());
+                        continue;
+                    }
+                    writer.write(result);
+                    if (result.isSuccessful()) {
+                        successfulRuns.add(result);
+                        completed++;
+                    } else {
+                        failed++;
+                    }
+                    int done = completed + failed;
+                    if (done % 25 == 0 || done == totalRunsTarget) {
+                        System.out.println("Progreso: " + done + "/" + totalRunsTarget + " corridas.");
+                    }
                 }
+
+                if (!successfulRuns.isEmpty()) writer.writePairAnalysis(pair, successfulRuns);
+                writer.flush();
             }
         } finally {
             pool.shutdown();
             writer.close();
         }
 
-        System.out.println("BatchRunner finalizado: " + completed.get() + " corrida(s) completada(s), "
-                + failed.get() + " fallida(s). Salida en: " + outDir.getPath());
+        System.out.println("BatchRunner finalizado: " + completed + " corrida(s) completada(s), "
+                + failed + " fallida(s). Salida en: " + outDir.getPath());
     }
 
     // ------------------------------------------------------------------
     // Ejecucion de una corrida
     // ------------------------------------------------------------------
 
-    private static final class RunTask implements Callable<Void> {
+    private static final class RunTask implements Callable<RunResult> {
         private final Pair pair;
         private final Configuration cfg;
         private final int runIndex;
@@ -154,14 +176,9 @@ public final class BatchRunner {
         private final String seedSource;
         private final SMPSO_TopHat_Fusion.FusionCache cache;
         private final String gitCommit;
-        private final RunWriter writer;
-        private final AtomicInteger completed;
-        private final AtomicInteger failed;
-        private final long totalRunsPlanned;
 
         RunTask(Pair pair, Configuration cfg, int runIndex, long seed, String seedSource,
-                SMPSO_TopHat_Fusion.FusionCache cache, String gitCommit, RunWriter writer,
-                AtomicInteger completed, AtomicInteger failed, long totalRunsPlanned) {
+                SMPSO_TopHat_Fusion.FusionCache cache, String gitCommit) {
             this.pair = pair;
             this.cfg = cfg;
             this.runIndex = runIndex;
@@ -169,14 +186,10 @@ public final class BatchRunner {
             this.seedSource = seedSource;
             this.cache = cache;
             this.gitCommit = gitCommit;
-            this.writer = writer;
-            this.completed = completed;
-            this.failed = failed;
-            this.totalRunsPlanned = totalRunsPlanned;
         }
 
         @Override
-        public Void call() {
+        public RunResult call() {
             long start = System.nanoTime();
             try {
                 SMPSO_TopHat_Fusion.Optimizer optimizer = new SMPSO_TopHat_Fusion.Optimizer(
@@ -184,35 +197,73 @@ public final class BatchRunner {
                 List<SMPSO_TopHat_Fusion.Solution> front = optimizer.run();
                 double durationMs = (System.nanoTime() - start) / 1e6;
 
-                writer.writeRun(pair, cfg, runIndex, seed, seedSource, gitCommit,
-                        "OK", optimizer.getEvaluations(), durationMs, front.size(), null);
-                writer.writeFront(pair, cfg, runIndex, seed, front);
-
-                int done = completed.incrementAndGet();
-                if (done % 25 == 0 || done == totalRunsPlanned) {
-                    System.out.println("Progreso: " + done + "/" + totalRunsPlanned + " corridas.");
-                }
+                return RunResult.success(pair, cfg, runIndex, seed, seedSource, gitCommit,
+                        optimizer.getEvaluations(), durationMs, front);
             } catch (RuntimeException e) {
                 double durationMs = (System.nanoTime() - start) / 1e6;
-                failed.incrementAndGet();
-                writer.writeRun(pair, cfg, runIndex, seed, seedSource, gitCommit,
-                        "FAILED", 0, durationMs, 0, e.toString());
                 System.err.println("Corrida fallida (par=" + pair.id + ", " + cfg.id + ", run="
                         + runIndex + "): " + e);
+                return RunResult.failure(pair, cfg, runIndex, seed, seedSource, gitCommit,
+                        durationMs, e.toString());
             }
-            return null;
+        }
+    }
+
+    private static final class RunResult {
+        final Pair pair;
+        final Configuration configuration;
+        final int runIndex;
+        final long seed;
+        final String seedSource;
+        final String gitCommit;
+        final int evaluations;
+        final double durationMs;
+        final List<SMPSO_TopHat_Fusion.Solution> front;
+        final String error;
+
+        private RunResult(Pair pair, Configuration configuration, int runIndex, long seed,
+                          String seedSource, String gitCommit, int evaluations, double durationMs,
+                          List<SMPSO_TopHat_Fusion.Solution> front, String error) {
+            this.pair = pair;
+            this.configuration = configuration;
+            this.runIndex = runIndex;
+            this.seed = seed;
+            this.seedSource = seedSource;
+            this.gitCommit = gitCommit;
+            this.evaluations = evaluations;
+            this.durationMs = durationMs;
+            this.front = front;
+            this.error = error;
+        }
+
+        static RunResult success(Pair pair, Configuration cfg, int runIndex, long seed,
+                                 String seedSource, String gitCommit, int evaluations,
+                                 double durationMs, List<SMPSO_TopHat_Fusion.Solution> front) {
+            return new RunResult(pair, cfg, runIndex, seed, seedSource, gitCommit,
+                    evaluations, durationMs, front, null);
+        }
+
+        static RunResult failure(Pair pair, Configuration cfg, int runIndex, long seed,
+                                 String seedSource, String gitCommit, double durationMs, String error) {
+            return new RunResult(pair, cfg, runIndex, seed, seedSource, gitCommit,
+                    0, durationMs, new ArrayList<SMPSO_TopHat_Fusion.Solution>(), error);
+        }
+
+        boolean isSuccessful() {
+            return error == null;
         }
     }
 
     private static SMPSO_TopHat_Fusion.FusionCache buildCache(Pair pair, ExperimentConfig config) throws IOException {
-        FloatProcessor vis = loadGray(pair.visiblePath, "visible", pair.id);
-        FloatProcessor ir = loadGray(pair.infraredPath, "infrarroja", pair.id);
-        if (vis.getWidth() != ir.getWidth() || vis.getHeight() != ir.getHeight()) {
+        FloatProcessor ct = loadGray(pair.ctPath, "CT", pair.id);
+        FloatProcessor mri = loadGray(pair.mriPath, "MRI", pair.id);
+        if (ct.getWidth() != mri.getWidth() || ct.getHeight() != mri.getHeight()) {
             throw new IllegalArgumentException("Las imagenes de " + pair.id
                     + " no tienen el mismo ancho y alto.");
         }
-        return new SMPSO_TopHat_Fusion.FusionCache(vis, ir, config.baseMode,
-                config.radiusMin, config.radiusMax, config.contrastWeightMin, config.contrastWeightMax);
+        return new SMPSO_TopHat_Fusion.FusionCache(ct, mri, config.radiusMin, config.radiusMax,
+                config.whiteTopHatWeightMin, config.whiteTopHatWeightMax,
+                config.blackTopHatWeightMin, config.blackTopHatWeightMax);
     }
 
     private static FloatProcessor loadGray(String path, String label, String pairId) throws IOException {
@@ -235,17 +286,21 @@ public final class BatchRunner {
         return pairId + "|" + cfg.particles + "|" + cfg.generations + "|" + run;
     }
 
-    private static long resolveSeed(Map<String, Long> seedFile, String pairId, Configuration cfg, int run) {
-        Long fromFile = seedFile.get(seedKey(pairId, cfg, run));
-        if (fromFile != null) return fromFile;
-        // Semilla derivada, NO pre-registrada: solo para corridas piloto/exploratorias.
-        // Las corridas formales deben declarar su semilla en experiments/seeds.
-        String basis = pairId + "|" + cfg.particles + "|" + cfg.generations + "|" + run;
-        long hash = 1125899906842597L; // FNV-like offset, evita 0 con entradas cortas.
-        for (int i = 0; i < basis.length(); i++) {
-            hash = 31 * hash + basis.charAt(i);
+    private static long resolveSeed(Map<String, Long> seedFile, SecureRandom generator,
+                                    Set<Long> generatedSeeds, String pairId, Configuration cfg, int run) {
+        if (generator == null) {
+            Long seed = seedFile.get(seedKey(pairId, cfg, run));
+            if (seed == null) {
+                throw new IllegalArgumentException("Falta semilla para par=" + pairId
+                        + ", " + cfg.id + ", corrida=" + run);
+            }
+            return seed;
         }
-        return hash;
+        long seed;
+        do {
+            seed = generator.nextLong();
+        } while (!generatedSeeds.add(seed));
+        return seed;
     }
 
     private static Map<String, Long> readSeeds(String path) throws IOException {
@@ -260,7 +315,10 @@ public final class BatchRunner {
             int generations = Integer.parseInt(row[header.get("generations")].trim());
             int run = Integer.parseInt(row[header.get("run")].trim());
             long seed = Long.parseLong(row[header.get("seed")].trim());
-            seeds.put(pairId + "|" + particles + "|" + generations + "|" + run, seed);
+            String key = pairId + "|" + particles + "|" + generations + "|" + run;
+            if (seeds.put(key, seed) != null) {
+                throw new IllegalArgumentException("Semilla duplicada para " + key);
+            }
         }
         return seeds;
     }
@@ -271,13 +329,13 @@ public final class BatchRunner {
 
     private static final class Pair {
         final String id;
-        final String visiblePath;
-        final String infraredPath;
+        final String ctPath;
+        final String mriPath;
 
-        Pair(String id, String visiblePath, String infraredPath) {
+        Pair(String id, String ctPath, String mriPath) {
             this.id = id;
-            this.visiblePath = visiblePath;
-            this.infraredPath = infraredPath;
+            this.ctPath = ctPath;
+            this.mriPath = mriPath;
         }
     }
 
@@ -286,6 +344,15 @@ public final class BatchRunner {
         List<String[]> rows = readCsv(path);
         if (rows.isEmpty()) return pairs;
         Map<String, Integer> header = indexHeader(rows.get(0));
+        Integer ctColumn = header.get("ct_path");
+        Integer mriColumn = header.get("mri_path");
+        // Compatibilidad con manifiestos creados antes de adoptar CT-MRI como dataset principal.
+        if (ctColumn == null) ctColumn = header.get("visible_path");
+        if (mriColumn == null) mriColumn = header.get("infrared_path");
+        if (!header.containsKey("pair_id") || ctColumn == null || mriColumn == null) {
+            throw new IllegalArgumentException(
+                    "El manifiesto debe incluir pair_id, ct_path y mri_path");
+        }
         java.util.Set<String> filter = null;
         if (pairFilterCsv != null && !pairFilterCsv.isEmpty()) {
             filter = new java.util.HashSet<String>();
@@ -295,7 +362,7 @@ public final class BatchRunner {
             String[] row = rows.get(i);
             String pairId = row[header.get("pair_id")];
             if (filter != null && !filter.contains(pairId)) continue;
-            pairs.add(new Pair(pairId, row[header.get("visible_path")], row[header.get("infrared_path")]));
+            pairs.add(new Pair(pairId, row[ctColumn], row[mriColumn]));
         }
         return pairs;
     }
@@ -321,13 +388,14 @@ public final class BatchRunner {
     private static final class ExperimentConfig {
         int radiusMin;
         int radiusMax;
-        double contrastWeightMin;
-        double contrastWeightMax;
+        double whiteTopHatWeightMin;
+        double whiteTopHatWeightMax;
+        double blackTopHatWeightMin;
+        double blackTopHatWeightMax;
         List<Integer> particles = new ArrayList<Integer>();
         List<Integer> generations = new ArrayList<Integer>();
         int archiveSize;
         int runsPerPairAndConfiguration;
-        int baseMode;
         String baseImageRaw;
 
         static ExperimentConfig readFrom(String path) throws IOException {
@@ -342,11 +410,17 @@ public final class BatchRunner {
             @SuppressWarnings("unchecked")
             Map<String, Object> radius = (Map<String, Object>) decisionVariables.get("radius");
             @SuppressWarnings("unchecked")
-            Map<String, Object> contrastWeight = (Map<String, Object>) decisionVariables.get("contrastWeight");
+            Map<String, Object> whiteTopHatWeight =
+                    (Map<String, Object>) decisionVariables.get("whiteTopHatWeight");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> blackTopHatWeight =
+                    (Map<String, Object>) decisionVariables.get("blackTopHatWeight");
             cfg.radiusMin = ((Number) radius.get("minimum")).intValue();
             cfg.radiusMax = ((Number) radius.get("maximum")).intValue();
-            cfg.contrastWeightMin = ((Number) contrastWeight.get("minimum")).doubleValue();
-            cfg.contrastWeightMax = ((Number) contrastWeight.get("maximum")).doubleValue();
+            cfg.whiteTopHatWeightMin = ((Number) whiteTopHatWeight.get("minimum")).doubleValue();
+            cfg.whiteTopHatWeightMax = ((Number) whiteTopHatWeight.get("maximum")).doubleValue();
+            cfg.blackTopHatWeightMin = ((Number) blackTopHatWeight.get("minimum")).doubleValue();
+            cfg.blackTopHatWeightMax = ((Number) blackTopHatWeight.get("maximum")).doubleValue();
 
             @SuppressWarnings("unchecked")
             Map<String, Object> smpso = (Map<String, Object>) json.get("smpso");
@@ -360,18 +434,35 @@ public final class BatchRunner {
             cfg.runsPerPairAndConfiguration = ((Number) smpso.get("runsPerPairAndConfiguration")).intValue();
 
             cfg.baseImageRaw = String.valueOf(json.get("baseImage"));
-            cfg.baseMode = parseBaseMode(cfg.baseImageRaw);
+            if (!"average".equalsIgnoreCase(cfg.baseImageRaw)) {
+                throw new IllegalArgumentException("baseImage debe ser average para el experimento CT-MRI");
+            }
+            cfg.validate();
             return cfg;
         }
 
-        private static int parseBaseMode(String value) {
-            if ("visible".equalsIgnoreCase(value)) return 1;
-            if ("infrared".equalsIgnoreCase(value) || "infrarroja".equalsIgnoreCase(value)) return 2;
-            if (!"average".equalsIgnoreCase(value)) {
-                System.err.println("Aviso: baseImage=\"" + value + "\" no es una eleccion concreta "
-                        + "(ver docs/decisions.md). Se usa el promedio VIS/IR por defecto.");
+        private void validate() {
+            if (radiusMin < 1 || radiusMax < radiusMin) {
+                throw new IllegalArgumentException("Rango de radius invalido");
             }
-            return 0;
+            if (Math.abs(whiteTopHatWeightMin - SMPSO_TopHat_Fusion.CONTRAST_WEIGHT_MIN) > 1e-12
+                    || Math.abs(whiteTopHatWeightMax - SMPSO_TopHat_Fusion.CONTRAST_WEIGHT_MAX) > 1e-12
+                    || Math.abs(blackTopHatWeightMin - SMPSO_TopHat_Fusion.CONTRAST_WEIGHT_MIN) > 1e-12
+                    || Math.abs(blackTopHatWeightMax - SMPSO_TopHat_Fusion.CONTRAST_WEIGHT_MAX) > 1e-12) {
+                throw new IllegalArgumentException("Los pesos mWTH y mBTH deben usar el rango [0.35,2]");
+            }
+            if (particles.isEmpty() || generations.isEmpty()) {
+                throw new IllegalArgumentException("Debe existir al menos una configuracion experimental");
+            }
+            for (int value : particles) {
+                if (value < 4) throw new IllegalArgumentException("Cada enjambre debe tener al menos 4 particulas");
+            }
+            for (int value : generations) {
+                if (value < 1) throw new IllegalArgumentException("Las generaciones deben ser positivas");
+            }
+            if (archiveSize < 2 || runsPerPairAndConfiguration < 1) {
+                throw new IllegalArgumentException("archiveSize y runsPerPairAndConfiguration invalidos");
+            }
         }
 
         List<Configuration> buildConfigurations() {
@@ -386,42 +477,113 @@ public final class BatchRunner {
     }
 
     // ------------------------------------------------------------------
-    // Salida: runs.csv y fronts.csv
+    // Salida de corridas y postprocesamiento Pareto por par
     // ------------------------------------------------------------------
 
     private static final class RunWriter {
         private final PrintWriter runs;
+        private final PrintWriter seeds;
         private final PrintWriter fronts;
+        private final PrintWriter metrics;
+        private final PrintWriter normalization;
+        private final PrintWriter referenceFronts;
+        private final PrintWriter consolidatedFronts;
 
-        RunWriter(File runsFile, File frontsFile) throws IOException {
-            runs = new PrintWriter(runsFile, "UTF-8");
-            fronts = new PrintWriter(frontsFile, "UTF-8");
+        RunWriter(File outDir) throws IOException {
+            runs = new PrintWriter(new File(outDir, "runs.csv"), "UTF-8");
+            seeds = new PrintWriter(new File(outDir, "seeds.csv"), "UTF-8");
+            fronts = new PrintWriter(new File(outDir, "fronts.csv"), "UTF-8");
+            metrics = new PrintWriter(new File(outDir, "metrics.csv"), "UTF-8");
+            normalization = new PrintWriter(new File(outDir, "normalization.csv"), "UTF-8");
+            referenceFronts = new PrintWriter(new File(outDir, "reference_fronts.csv"), "UTF-8");
+            consolidatedFronts = new PrintWriter(new File(outDir, "consolidated_fronts.csv"), "UTF-8");
             runs.println("pair_id,config_id,particles,generations,run,seed,seed_source,status,"
                     + "evaluations,duration_ms,front_size,git_commit,timestamp,error");
-            fronts.println("pair_id,config_id,particles,generations,run,seed,r,m,entropy,ssim");
+            seeds.println("pair_id,particles,generations,run,seed");
+            fronts.println("pair_id,config_id,particles,generations,run,seed,r,m_wth,m_bth,"
+                    + "entropy_normalized,ssim_global_average");
+            metrics.println("pair_id,config_id,particles,generations,run,seed,hypervolume,igd");
+            normalization.println("pair_id,ideal_entropy,nadir_entropy,ideal_ssim,nadir_ssim,"
+                    + "hv_reference_z_entropy,hv_reference_z_ssim,union_size,reference_front_size");
+            referenceFronts.println("pair_id,r,m_wth,m_bth,entropy_normalized,ssim_global_average,"
+                    + "z_entropy,z_ssim");
+            consolidatedFronts.println("pair_id,config_id,particles,generations,r,m_wth,m_bth,"
+                    + "entropy_normalized,ssim_global_average");
         }
 
-        synchronized void writeRun(Pair pair, Configuration cfg, int runIndex, long seed, String seedSource,
-                                    String gitCommit, String status, int evaluations, double durationMs,
-                                    int frontSize, String error) {
+        void writeSeed(Pair pair, Configuration cfg, int run, long seed) {
+            seeds.println(csv(pair.id) + "," + cfg.particles + "," + cfg.generations
+                    + "," + run + "," + seed);
+        }
+
+        void write(RunResult result) {
+            Pair pair = result.pair;
+            Configuration cfg = result.configuration;
+            String status = result.isSuccessful() ? "OK" : "FAILED";
             runs.println(csv(pair.id) + "," + csv(cfg.id) + "," + cfg.particles + "," + cfg.generations + ","
-                    + runIndex + "," + seed + "," + seedSource + "," + status + "," + evaluations + ","
-                    + String.format(java.util.Locale.US, "%.3f", durationMs) + "," + frontSize + ","
-                    + csv(gitCommit) + "," + Instant.now() + "," + csv(error == null ? "" : error));
-        }
-
-        synchronized void writeFront(Pair pair, Configuration cfg, int runIndex, long seed,
-                                      List<SMPSO_TopHat_Fusion.Solution> front) {
-            for (SMPSO_TopHat_Fusion.Solution s : front) {
+                    + result.runIndex + "," + result.seed + "," + result.seedSource + "," + status + ","
+                    + result.evaluations + "," + format(result.durationMs, 3) + "," + result.front.size() + ","
+                    + csv(result.gitCommit) + "," + Instant.now() + ","
+                    + csv(result.error == null ? "" : result.error));
+            if (!result.isSuccessful()) return;
+            for (SMPSO_TopHat_Fusion.Solution s : result.front) {
                 fronts.println(csv(pair.id) + "," + csv(cfg.id) + "," + cfg.particles + "," + cfg.generations + ","
-                        + runIndex + "," + seed + "," + s.r + ","
-                        + String.format(java.util.Locale.US, "%.6f", s.m) + ","
-                        + String.format(java.util.Locale.US, "%.6f", s.entropy) + ","
-                        + String.format(java.util.Locale.US, "%.6f", s.ssim));
+                        + result.runIndex + "," + result.seed + "," + s.r + ","
+                        + format(s.mWth, 9) + "," + format(s.mBth, 9) + ","
+                        + format(s.entropy, 12) + "," + format(s.ssim, 12));
             }
         }
 
-        synchronized void writeFailedPair(Pair pair, Exception e, String gitCommit) {
+        void writePairAnalysis(Pair pair, List<RunResult> results) {
+            List<List<SMPSO_TopHat_Fusion.Solution>> allFronts = new ArrayList<List<SMPSO_TopHat_Fusion.Solution>>();
+            for (RunResult result : results) allFronts.add(result.front);
+            ParetoMetrics.Analysis analysis = ParetoMetrics.analyze(allFronts);
+
+            normalization.println(csv(pair.id) + "," + format(analysis.idealEntropy, 12) + ","
+                    + format(analysis.nadirEntropy, 12) + "," + format(analysis.idealSsim, 12) + ","
+                    + format(analysis.nadirSsim, 12) + "," + ParetoMetrics.REFERENCE_POINT + ","
+                    + ParetoMetrics.REFERENCE_POINT + "," + analysis.unionSize + ","
+                    + analysis.referenceFront.size());
+
+            for (SMPSO_TopHat_Fusion.Solution solution : analysis.referenceFront) {
+                ParetoMetrics.NormalizedPoint point = ParetoMetrics.normalize(solution, analysis);
+                referenceFronts.println(csv(pair.id) + "," + solution.r + ","
+                        + format(solution.mWth, 9) + "," + format(solution.mBth, 9) + ","
+                        + format(solution.entropy, 12) + "," + format(solution.ssim, 12) + ","
+                        + format(point.entropy, 12) + "," + format(point.ssim, 12));
+            }
+
+            Map<String, List<List<SMPSO_TopHat_Fusion.Solution>>> byConfiguration =
+                    new LinkedHashMap<String, List<List<SMPSO_TopHat_Fusion.Solution>>>();
+            Map<String, Configuration> configurationById = new LinkedHashMap<String, Configuration>();
+            for (RunResult result : results) {
+                double hv = ParetoMetrics.hypervolume(result.front, analysis);
+                double igd = ParetoMetrics.igd(result.front, analysis);
+                Configuration cfg = result.configuration;
+                metrics.println(csv(pair.id) + "," + csv(cfg.id) + "," + cfg.particles + ","
+                        + cfg.generations + "," + result.runIndex + "," + result.seed + ","
+                        + format(hv, 12) + "," + format(igd, 12));
+
+                if (!byConfiguration.containsKey(cfg.id)) {
+                    byConfiguration.put(cfg.id, new ArrayList<List<SMPSO_TopHat_Fusion.Solution>>());
+                    configurationById.put(cfg.id, cfg);
+                }
+                byConfiguration.get(cfg.id).add(result.front);
+            }
+
+            for (Map.Entry<String, List<List<SMPSO_TopHat_Fusion.Solution>>> entry
+                    : byConfiguration.entrySet()) {
+                Configuration cfg = configurationById.get(entry.getKey());
+                for (SMPSO_TopHat_Fusion.Solution solution : ParetoMetrics.consolidate(entry.getValue())) {
+                    consolidatedFronts.println(csv(pair.id) + "," + csv(cfg.id) + "," + cfg.particles + ","
+                            + cfg.generations + "," + solution.r + "," + format(solution.mWth, 9) + ","
+                            + format(solution.mBth, 9) + "," + format(solution.entropy, 12) + ","
+                            + format(solution.ssim, 12));
+                }
+            }
+        }
+
+        void writeFailedPair(Pair pair, Exception e, String gitCommit) {
             String[] fields = {
                     csv(pair.id), "", "", "", "", "", "", "FAILED", "0", "0.000", "0",
                     csv(gitCommit), String.valueOf(Instant.now()), csv(e.toString())
@@ -429,11 +591,32 @@ public final class BatchRunner {
             runs.println(String.join(",", fields));
         }
 
-        void close() {
+        void flush() {
             runs.flush();
-            runs.close();
+            seeds.flush();
             fronts.flush();
+            metrics.flush();
+            normalization.flush();
+            referenceFronts.flush();
+            consolidatedFronts.flush();
+            if (seeds.checkError()) {
+                throw new IllegalStateException("No se pudo guardar seeds.csv");
+            }
+        }
+
+        void close() {
+            flush();
+            runs.close();
+            seeds.close();
             fronts.close();
+            metrics.close();
+            normalization.close();
+            referenceFronts.close();
+            consolidatedFronts.close();
+        }
+
+        private static String format(double value, int decimals) {
+            return String.format(java.util.Locale.US, "%." + decimals + "f", value);
         }
 
         private static String csv(String value) {
@@ -451,7 +634,8 @@ public final class BatchRunner {
         try (PrintWriter out = new PrintWriter(file, "UTF-8")) {
             out.println("config: " + parsed.configPath);
             out.println("manifest: " + parsed.manifestPath);
-            out.println("seeds: " + (parsed.seedsPath == null ? "(derivadas, no formales)" : parsed.seedsPath));
+            out.println("seeds: " + (parsed.seedsPath == null ? "generated" : parsed.seedsPath));
+            out.println("seeds_output: seeds.csv");
             out.println("git_commit: " + gitCommit);
             out.println("started_at: " + Instant.now());
             out.println("threads: " + threads);
@@ -460,8 +644,18 @@ public final class BatchRunner {
             out.println("configurations: " + configurations.size());
             out.println("runs_per_pair_and_configuration: " + config.runsPerPairAndConfiguration);
             out.println("radius_range: [" + config.radiusMin + "," + config.radiusMax + "]");
-            out.println("contrast_weight_range: [" + config.contrastWeightMin + "," + config.contrastWeightMax + "]");
+            out.println("white_top_hat_weight_range: [" + config.whiteTopHatWeightMin + ","
+                    + config.whiteTopHatWeightMax + "]");
+            out.println("black_top_hat_weight_range: [" + config.blackTopHatWeightMin + ","
+                    + config.blackTopHatWeightMax + "]");
             out.println("base_image: " + config.baseImageRaw);
+            out.println("entropy_objective: shannon_normalized_by_8");
+            out.println("ssim_objective: global_average_ct_mri");
+            out.println("metric_normalization: empirical_ideal_nadir_per_pair_all_runs_all_configurations");
+            out.println("metric_direction: minimization_after_normalization");
+            out.println("hypervolume_reference_point: [" + ParetoMetrics.REFERENCE_POINT + ","
+                    + ParetoMetrics.REFERENCE_POINT + "]");
+            out.println("igd_reference_front: nondominated_union_per_pair_all_runs_all_configurations");
             out.println("max_runs_cap: " + (parsed.maxRuns > 0 ? parsed.maxRuns : "(sin limite)"));
             out.println("smpso_c1_range: [" + SMPSO_TopHat_Fusion.SMPSO_C1_MIN + ","
                     + SMPSO_TopHat_Fusion.SMPSO_C1_MAX + "]");
@@ -496,7 +690,7 @@ public final class BatchRunner {
 
     // ------------------------------------------------------------------
     // CSV minimo (sin comillas embebidas complejas; suficiente para los
-    // manifiestos y semillas versionados en experiments/).
+    // manifiestos y archivos de semillas generados por BatchRunner).
     // ------------------------------------------------------------------
 
     private static List<String[]> readCsv(String path) throws IOException {

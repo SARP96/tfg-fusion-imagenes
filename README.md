@@ -1,43 +1,53 @@
 # SMPSO Top-Hat Image Fusion
 
 Plugin experimental para Fiji/ImageJ destinado a optimizar mediante SMPSO los
-parámetros de la transformada Top-Hat empleados en la fusión de imágenes
-visibles e infrarrojas registradas.
+parámetros de la transformada Top-Hat empleados en la fusión multimodal de
+imágenes CT y MRI registradas.
 
 ## Formulación actual
 
-Las variables de decisión son el radio entero `r` del elemento estructurante y
-el peso real de contraste `m`. La imagen fusionada se calcula como:
+Las variables de decisión son el radio entero `r` del elemento estructurante,
+el peso real `mWTH` para los detalles claros y el peso real `mBTH` para los
+detalles oscuros. Ambos pesos pertenecen a `[0.35, 2]`. La imagen base es
+siempre el promedio de CT y MRI:
 
 ```text
-Ifus = Ib + m * max(WTH_IR, WTH_VIS) - m * max(BTH_IR, BTH_VIS)
+Ib   = (ICT + IMRI) / 2
+Ifus = Ib + mWTH * max(WTH_CT, WTH_MRI)
+          - mBTH * max(BTH_CT, BTH_MRI)
 ```
 
 Los dos objetivos se maximizan simultáneamente:
 
 ```text
-f1 = Entropía(Ifus)
-f2 = (SSIM(Ifus, VIS) + SSIM(Ifus, IR)) / 2
+f1 = Entropía_Shannon_8_bits(Ifus) / 8
+f2 = (SSIM_global(Ifus, CT) + SSIM_global(Ifus, MRI)) / 2
 ```
+
+La entropía queda en `[0,1]`. Para comparar corridas, ambos objetivos de
+maximización se normalizan por par usando el ideal y nadir experimentales de la
+unión completa y se transforman a minimización. El punto de referencia de HV es
+`(1.1,1.1)` y el frente de referencia de IGD es `P*`, la unión no dominada de
+todas las configuraciones y corridas del mismo par.
 
 ## Estado
 
 La versión `0.1.0-SNAPSHOT` incluye:
 
 - Ejecución interactiva como plugin de Fiji/ImageJ.
-- Fusión Top-Hat con imagen base promedio, visible o infrarroja.
+- Fusión Top-Hat CT-MRI con imagen base promedio fija y pesos WTH/BTH independientes.
 - SMPSO alineado con los operadores de referencia: actualización síncrona,
   velocidad restringida, torneo de líderes y mutación polinomial.
 - Archivo externo no dominado y distancia de crowding.
-- Entropía de Shannon y SSIM global.
+- Entropía de Shannon normalizada y SSIM global promedio CT-MRI.
 - Semilla configurable para reproducir una corrida.
 - Tabla, gráfico y reconstrucción opcional de soluciones Pareto.
-- Pruebas unitarias del núcleo, reproducibilidad y operadores SMPSO.
+- Ejecución batch paralela con caché morfológica compartida por par.
+- Frentes individuales, frente consolidado por configuración y `P*` por par.
+- Cálculo de HV bidimensional e IGD convencional con normalización común.
+- Pruebas unitarias del núcleo, reproducibilidad, operadores SMPSO e indicadores.
 
-Todavía no están implementados el SSIM local, la ejecución batch de 30 corridas,
-el frente consolidado ni los indicadores HV, IGD y Spacing. Esos elementos se
-encuentran documentados como trabajo planificado y no deben presentarse como
-funcionalidades terminadas.
+No se implementan SSIM local, Spacing, MI ni `Q^{AB/F}` en la formulación actual.
 
 Las correcciones y parámetros adoptados para el algoritmo se explican en
 `docs/correcciones-smpso-referencia.md`.
@@ -84,7 +94,7 @@ Reinicie Fiji y seleccione:
 Plugins > SMPSO TopHat Fusion > SMPSO Top-Hat Fusion
 ```
 
-Abra previamente una imagen visible y su correspondiente imagen infrarroja.
+Abra previamente una imagen CT y su correspondiente imagen MRI.
 Ambas deben estar registradas y tener el mismo ancho y alto.
 
 ## Ejecución batch (sin Fiji)
@@ -101,8 +111,8 @@ el detalle de esta optimización y de la paralelización.
 mvn -q clean compile
 java -cp target/classes:<ruta-a-ij-1.54p.jar> py.fpuna.fusion.plugin.BatchRunner \
     --config experiments/configs/pilot.json \
-    --manifest experiments/manifests/image-pairs-example.csv \
-    --seeds experiments/seeds/seeds-example.csv \
+    --manifest experiments/manifests/ct-mri-184-pairs.csv \
+    --pairs ct_16003 \
     --out results/runs \
     --threads 8
 ```
@@ -111,13 +121,20 @@ Genera, dentro de `results/runs/<fecha-hora>/` (excluido de Git):
 
 - `runs.csv`: una fila por corrida, con semilla, evaluaciones, duración,
   tamaño del frente, hash del commit y estado (`OK`/`FAILED`).
-- `fronts.csv`: una fila por solución no dominada (`r`, `m`, entropía, SSIM).
+- `seeds.csv`: semillas exactas de todas las corridas programadas, listas para
+  reutilizar con `--seeds`.
+- `fronts.csv`: frentes individuales con `r`, `mWTH`, `mBTH`, entropía y SSIM.
+- `metrics.csv`: HV e IGD de cada corrida.
+- `normalization.csv`: ideal, nadir y punto de referencia usados por par.
+- `reference_fronts.csv`: frente empírico común `P*`, crudo y normalizado.
+- `consolidated_fronts.csv`: unión no dominada de las corridas por configuración.
 - `metadata.txt`: configuración, manifiesto, semillas, commit e hilos usados.
 
-Las semillas ausentes en el archivo indicado se derivan de forma
-determinística y se marcan como `derived` (no `file`) en `runs.csv`: sirven
-para corridas exploratorias, no para la serie formal de 30 corridas, que debe
-usar semillas pre-registradas en `experiments/seeds`.
+Sin `--seeds`, cada lanzamiento genera semillas aleatorias nuevas; `runs.csv`
+marca su origen como `generated` y `seeds.csv` permite repetir la ejecución.
+Para repetirla, pase `--seeds results/runs/<fecha-hora>/seeds.csv` con la misma
+configuración y el mismo manifiesto. Si falta una semilla requerida, el batch
+se detiene en vez de cambiarla silenciosamente.
 
 Opciones útiles para pruebas rápidas: `--pairs id1,id2` (filtra pares) y
 `--max-runs N` (limita el total de corridas).
@@ -128,7 +145,8 @@ Opciones útiles para pruebas rápidas: `--pairs id1,id2` (filtra pares) y
 - `src/test/java`: pruebas automatizadas.
 - `experiments/configs`: configuraciones versionadas de experimentos.
 - `experiments/manifests`: descripción de los pares, sin incluir el dataset.
-- `experiments/seeds`: semillas planificadas o utilizadas.
+- `experiments/seeds`: ejemplos o archivos de semillas elegidos para conservar
+  en Git; cada ejecución también genera su propio `seeds.csv` en resultados.
 - `docs`: metodología, arquitectura e instalación detallada.
 - `data`: instrucciones para preparar datos locales ignorados por Git.
 - `results`: resúmenes y figuras publicables; las corridas masivas se ignoran.

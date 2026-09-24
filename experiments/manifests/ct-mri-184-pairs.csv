@@ -1,4 +1,4 @@
-pair_id,visible_path,infrared_path,dataset,split
+pair_id,ct_path,mri_path,dataset,split
 ct_16003,data/raw/ct/16003.png,data/raw/mri/16003.png,ct-mri-complementario,complementary
 ct_16004,data/raw/ct/16004.png,data/raw/mri/16004.png,ct-mri-complementario,complementary
 ct_16005,data/raw/ct/16005.png,data/raw/mri/16005.png,ct-mri-complementario,complementary

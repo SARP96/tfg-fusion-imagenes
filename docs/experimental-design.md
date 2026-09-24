@@ -1,61 +1,51 @@
-# Diseño experimental planificado
-
-Este documento describe el protocolo propuesto. Las decisiones marcadas como
-pendientes deben aprobarse antes de producir resultados definitivos.
+# Diseño experimental
 
 ## Factores
 
-- Partículas: `4, 10, 20, 30, 40`.
-- Generaciones: `10, 30, 50, 100, 150`.
+- Partículas: `4,10,20,30,40`.
+- Generaciones: `10,30,50,100,150`.
 - Réplicas independientes: 30 por par y configuración.
-- Unidad de aplicación: un par VIS-IR registrado.
+- Unidad de aplicación: un par CT-MRI registrado.
 
-El diseño factorial completo contiene 25 configuraciones y 750 corridas por par.
-Al variar partículas y generaciones también cambia el número de evaluaciones;
-por tanto, debe registrarse tanto calidad como costo computacional.
+El diseño factorial contiene 25 configuraciones y 750 corridas por par. Con 184
+pares son 138.000 corridas. La comparación es por generaciones; también se
+registran evaluaciones y tiempo porque el costo cambia con ambos factores.
 
 ## Salida de cada corrida
 
-- Identificador del par, configuración y corrida.
-- Semilla `long` exacta.
-- Hash del commit de Git.
-- Parámetros completos del algoritmo.
-- Cantidad de evaluaciones y duración.
-- Frente no dominado individual con `r`, `m`, entropía y SSIM.
-- HV, IGD y Spacing cuando estén implementados.
+- Identificador de par, configuración y corrida.
+- Semilla `long` generada aleatoriamente por corrida, guardada en `seeds.csv`,
+  origen de la semilla y hash del commit. `--seeds` permite repetirla.
+- Cantidad de evaluaciones, duración y estado.
+- Frente individual con `r`, `mWTH`, `mBTH`, entropía normalizada y SSIM global.
+- HV e IGD calculados con una escala común por par.
 
-## Frente consolidado
+## Frentes
 
-Para cada par y configuración se unificarán los 30 frentes y se eliminarán las
-soluciones dominadas y duplicadas. El consolidado podrá mostrarse en pantalla,
-pero los frentes individuales se conservarán para medir variabilidad.
+Para cada par y configuración se unifican sus corridas y se eliminan soluciones
+dominadas o duplicadas para obtener el frente consolidado. Los frentes
+individuales se conservan para analizar variabilidad.
 
-## Frente de referencia
+El frente de referencia común `P*` de cada par es la unión no dominada de todas
+las configuraciones y corridas. El ideal y nadir experimentales se calculan
+sobre esa unión. HV usa `(1.1,1.1)` como referencia en el espacio normalizado de
+minimización; IGD compara cada frente individual con `P*`.
 
-IGD no puede calcularse contra el frente consolidado particular de cada
-configuración. Se requiere un frente común por par, obtenido mediante una de
-estas alternativas:
+## Decisiones adoptadas
 
-1. Exploración densa del espacio `(r,m)`.
-2. Unión no dominada de todas las configuraciones y corridas.
+- Dataset principal CT-MRI con 184 pares manifestados.
+- Base promedio fija.
+- Pesos independientes `mWTH,mBTH` en `[0.35,2]`.
+- Entropía normalizada y SSIM global promedio.
+- Comparación por generaciones.
+- Indicadores HV, IGD y tiempo; sin Spacing, MI ni `Q^{AB/F}`.
 
-La alternativa definitiva y la normalización deben acordarse antes del análisis.
+El rango de radio se mantiene en `[1,15]` en las configuraciones versionadas.
+Un cambio posterior requiere una configuración nueva y un commit identificable.
 
-## Análisis estadístico propuesto
+## Análisis estadístico posterior
 
 Para cada par y configuración se resumirán las 30 corridas con mediana, rango
-intercuartílico, media y desviación estándar. La comparación general podrá usar
-Friedman y comparaciones pareadas posteriores con Wilcoxon signed-rank y
-corrección de Holm.
-
-## Decisiones pendientes
-
-- Dataset VIS-IR principal y subconjunto piloto.
-- SSIM local o global y parámetros de ventana.
-- Entropía normalizada o sin normalizar.
-- Imagen base `Ib` fija.
-- Rango definitivo de `r` y `m`.
-- Tamaño fijo del archivo externo.
-- Parámetros `c1`, `c2`, `w`, constricción, `Vmax` y mutación.
-- Construcción del frente de referencia y punto de referencia de HV.
-- Comparación por generaciones o por presupuesto fijo de evaluaciones.
+intercuartílico, media y desviación estándar. La comparación estadística entre
+configuraciones queda fuera del ejecutor: se realizará sobre `metrics.csv` una
+vez finalizada la serie completa.

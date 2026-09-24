@@ -32,6 +32,13 @@ Todos los cambios relevantes del proyecto se documentarán en este archivo.
   configuraciones × 30 corridas (138.000 corridas, 0 fallidas). Resultados y
   tiempos reales en `docs/resultados-piloto-ct-mri.md` y
   `results/summaries/ct-mri-piloto-20260916-por-config.csv`.
+- `ParetoMetrics` para construir `P*`, normalizar con ideal/nadir empíricos y
+  calcular HV bidimensional e IGD convencional por corrida.
+- Archivos batch `metrics.csv`, `normalization.csv`, `reference_fronts.csv` y
+  `consolidated_fronts.csv`.
+- Pruebas unitarias de normalización, frente de referencia, HV e IGD.
+- Generación aleatoria de semillas por corrida y archivo `seeds.csv` reutilizable
+  mediante `--seeds` para repetir los frentes obtenidos.
 
 ### Cambiado
 
@@ -45,6 +52,16 @@ Todos los cambios relevantes del proyecto se documentarán en este archivo.
 - Actualización de la memoria personal alineada con el esquema de referencia.
 - `Optimizer` ya no recalcula la morfología Top-Hat en cada evaluación: la
   obtiene de una `FusionCache` precalculada por par de imágenes.
+- Dataset principal actualizado a CT-MRI y manifiestos con columnas `ct_path` y
+  `mri_path` (manteniendo compatibilidad con nombres anteriores).
+- Vector de decisión ampliado de `(r,m)` a `(r,mWTH,mBTH)`, con ambos pesos en
+  `[0.35,2]`; la base queda fija como promedio CT-MRI.
+- Primer objetivo cambiado a entropía normalizada y segundo objetivo fijado
+  como SSIM global promedio CT-MRI.
+- `BatchRunner` procesa un par por vez para no retener la caché del dataset
+  completo y calcula los indicadores al terminar sus corridas.
+- Las semillas faltantes en un archivo indicado con `--seeds` ahora producen un
+  error explícito en vez de sustituirse por valores derivados.
 
 ## [0.1.0] - pendiente
 

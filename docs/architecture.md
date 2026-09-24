@@ -20,12 +20,14 @@ SMPSO_TopHat_Fusion
 La clase se ubica en el paquete `py.fpuna.fusion.plugin` y se registra mediante
 `src/main/resources/plugins.config`.
 
-`BatchRunner`, en el mismo paquete, es el primer paso hacia la separación
-descrita más abajo: reutiliza `Optimizer`/`FusionCache` para ejecutar el
-diseño factorial fuera de Fiji, sin tocar la definición de los objetivos ni
-del algoritmo. Ver `docs/optimizacion-batch.md`.
+`BatchRunner`, en el mismo paquete, reutiliza `Optimizer`/`FusionCache` para
+ejecutar el diseño factorial fuera de Fiji. Procesa un par completo por vez,
+paraleliza sus corridas y libera la caché antes de pasar al siguiente par.
 
-## Arquitectura objetivo
+`ParetoMetrics` realiza el postprocesamiento por par: normalización ideal-nadir,
+frente empírico `P*`, HV bidimensional e IGD convencional.
+
+## Posible evolución
 
 La automatización experimental requerirá separar responsabilidades:
 
@@ -34,7 +36,7 @@ plugin/       Adaptador gráfico de Fiji
 smpso/        Movimiento, mutación, archivo y selección de líderes
 fusion/       Morfología y ecuación de fusión
 metrics/      Objetivos e indicadores de desempeño
-experiment/   Ejecución batch, semillas, persistencia y reanudación
+ experiment/   Ejecución batch, semillas y persistencia
 model/        Configuraciones, pares y soluciones
 ```
 

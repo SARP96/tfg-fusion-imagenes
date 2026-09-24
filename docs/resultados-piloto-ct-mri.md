@@ -1,5 +1,11 @@
 # Resultados: piloto batch sobre CT-MRI (184 pares)
 
+> **Registro histórico.** Esta corrida se ejecutó con la formulación anterior:
+> un solo peso `m` en `[0.1,2]`, entropía sin normalizar y sin HV/IGD. Sus cifras
+> validan el rendimiento del batch, pero no son resultados comparables con la
+> formulación actual de tres variables. CT-MRI fue adoptado posteriormente como
+> dataset principal.
+
 ## Qué es esto y qué NO es
 
 Esta es la primera ejecución completa de extremo a extremo de `BatchRunner`
@@ -7,17 +13,8 @@ sobre un dataset real, para validar que la automatización batch (`FusionCache`
 + ejecución paralela) funciona correctamente a la escala del diseño factorial
 completo. **No es el resultado formal de la tesis.**
 
-`docs/methodology.md` ya lo advierte explícitamente:
-
-> "Los pares CT-MRI pueden utilizarse como validación complementaria de
-> fusión multimodal, pero no sustituyen la evaluación VIS-IR indicada en el
-> objetivo de la tesis."
-
-Ninguna decisión pendiente de `docs/decisions.md` (dataset VIS-IR principal,
-SSIM local/global, normalización, frente de referencia, presupuesto
-experimental) queda resuelta por esta corrida. Es una prueba de ingeniería
-(¿el batch runner soporta el volumen real de trabajo sin caerse?), no una
-prueba metodológica.
+Es una prueba histórica de ingeniería para comprobar que el batch soportaba el
+volumen completo; no debe mezclarse con la futura serie formal.
 
 ## Configuración de la corrida
 
@@ -56,15 +53,14 @@ SSIM en `[0,5551, 0,8702]`.
 | Tiempo total (8 hilos) | ~6,8 h | **17,15 h** |
 | ms/evaluación implícito | 0,989 ms | ~2,49 ms |
 
-El tiempo real fue ~2,5× el proyectado. Dos causas identificadas al revisar
-`runs.csv`:
+El tiempo real fue ~2,5× el proyectado. El análisis de `runs.csv` mostró:
 
 1. **59 corridas (0,04 %) con estancamientos anómalos** (duración > 1 minuto,
    hasta 41,4 minutos, cuando la duración normal más alta observada es de
    pocos segundos). La corrida atravesó la madrugada (09:35 a 02:44 del día
-   siguiente); es consistente con que el equipo haya entrado en reposo o
-   tuviera carga externa puntual durante ese lapso — sin esos 59 casos, el
-   total hubiese sido ~14,96 h en vez de 17,15 h.
+   siguiente). La causa no quedó registrada: podrían influir el reposo del
+   equipo, una carga externa, pausas del runtime u otros factores. Sin esos
+   59 casos, el total estimado habría sido ~14,96 h en vez de 17,15 h.
 2. **Incluso descontando esos casos, el paralelismo real logrado fue ~3,6×**
    sobre 8 hilos (no 8×). `fuse()`, la entropía y el SSIM son bucles simples
    sobre arreglos `float[]` — trabajo limitado por ancho de banda de memoria,
@@ -73,9 +69,9 @@ El tiempo real fue ~2,5× el proyectado. Dos causas identificadas al revisar
    real, más el hecho de que la máquina se usó con normalidad (IDE, otros
    programas) durante esas horas.
 
-**Implicación práctica**: para planificar la serie formal, usar ~2,5 ms por
-evaluación (no 1 ms) como referencia realista de este tipo de hardware, y
-sumar margen para estancamientos si la corrida es larga y desatendida.
+**Implicación práctica histórica**: ~2,5 ms por evaluación fue la estimación
+observada para aquel equipo y condiciones de ejecución. No debe extrapolarse a
+otra computadora sin medir una corrida piloto.
 `docs/optimizacion-batch.md` tiene el detalle del benchmark aislado original;
 este documento son los números de una corrida real y sostenida.
 
@@ -112,14 +108,8 @@ notablemente más chico (13,4).
 se sube al repositorio es este documento más el resumen agregado en
 `results/summaries/`.
 
-## Próximos pasos sugeridos
+## Uso actual de estas cifras
 
-- Si se decide adoptar CT-MRI como validación complementaria formal (no
-  reemplaza VIS-IR), registrar esa decisión en `docs/decisions.md` con fecha
-  y aprobación, y generar un `seeds.csv` real para esa serie en vez de
-  semillas derivadas.
-- Para la serie formal VIS-IR, replanificar el tiempo esperado con ~2,5
-  ms/evaluación en vez de la cifra optimista del benchmark aislado.
-- Considerar guardar checkpoints o resultados parciales por pair para
-  corridas muy largas y desatendidas, dado que se observaron estancamientos
-  de hasta 41 minutos en corridas individuales durante esta ejecución.
+La formulación actual genera semillas nuevas por corrida y las guarda en
+`seeds.csv` para repetir una ejecución. Esta corrida histórica conserva sus
+semillas derivadas originales en `runs.csv`.

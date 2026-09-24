@@ -7,11 +7,11 @@ Estructura sugerida:
 ```text
 data/
 ├── raw/
-│   ├── visible/
-│   └── infrared/
+│   ├── ct/
+│   └── mri/
 └── processed/
-    ├── visible/
-    └── infrared/
+    ├── ct/
+    └── mri/
 ```
 
 No modifique las imágenes originales en `raw`. Documente en `processed` todo

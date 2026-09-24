@@ -24,9 +24,9 @@ class SMPSOTopHatFusionTest {
     }
 
     @Test
-    void balancedBinaryImageHasOneBitOfEntropy() {
+    void balancedBinaryImageHasOneEighthNormalizedEntropy() {
         FloatProcessor image = new FloatProcessor(2, 2, new float[]{0, 0, 255, 255});
-        assertEquals(1.0, SMPSO_TopHat_Fusion.entropy(image), 1e-12);
+        assertEquals(0.125, SMPSO_TopHat_Fusion.entropy(image), 1e-12);
     }
 
     @Test
@@ -133,27 +133,32 @@ class SMPSOTopHatFusionTest {
     void positionUpdateReflectsVelocityAtBothBounds() {
         SMPSO_TopHat_Fusion.Optimizer optimizer = optimizer(123L, 4, 1, 4);
         SMPSO_TopHat_Fusion.Particle particle = new SMPSO_TopHat_Fusion.Particle(
-                2.9, 0.15, 1.0, -0.20, solution(7.0, 0.9));
+                2.9, 0.40, 1.95, 1.0, -0.20, 0.20, solution(0.8, 0.9));
 
         optimizer.updatePosition(particle);
 
         assertEquals(3.0, particle.rPosition, 1e-12);
         assertEquals(-1.0, particle.rVelocity, 1e-12);
-        assertEquals(0.1, particle.mPosition, 1e-12);
-        assertEquals(0.20, particle.mVelocity, 1e-12);
+        assertEquals(0.35, particle.mWthPosition, 1e-12);
+        assertEquals(0.20, particle.mWthVelocity, 1e-12);
+        assertEquals(2.0, particle.mBthPosition, 1e-12);
+        assertEquals(-0.20, particle.mBthVelocity, 1e-12);
     }
 
     @Test
     void velocityRemainsInsideHalfRangeLimits() {
         SMPSO_TopHat_Fusion.Optimizer optimizer = optimizer(321L, 4, 1, 4);
         SMPSO_TopHat_Fusion.Particle particle = new SMPSO_TopHat_Fusion.Particle(
-                1.0, 0.1, 100.0, 100.0, new SMPSO_TopHat_Fusion.Solution(3, 1.0, 7.0, 0.9));
-        SMPSO_TopHat_Fusion.Solution leader = new SMPSO_TopHat_Fusion.Solution(3, 1.0, 7.1, 0.91);
+                1.0, 0.35, 0.35, 100.0, 100.0, 100.0,
+                new SMPSO_TopHat_Fusion.Solution(3, 1.0, 1.0, 0.8, 0.9));
+        SMPSO_TopHat_Fusion.Solution leader =
+                new SMPSO_TopHat_Fusion.Solution(3, 1.0, 1.0, 0.81, 0.91);
 
         optimizer.updateVelocity(particle, leader);
 
         assertTrue(Math.abs(particle.rVelocity) <= 1.0);
-        assertTrue(Math.abs(particle.mVelocity) <= 0.45);
+        assertTrue(Math.abs(particle.mWthVelocity) <= 0.825);
+        assertTrue(Math.abs(particle.mBthVelocity) <= 0.825);
     }
 
     @Test
@@ -176,11 +181,14 @@ class SMPSOTopHatFusionTest {
             SMPSO_TopHat_Fusion.Solution a = firstFront.get(i);
             SMPSO_TopHat_Fusion.Solution b = secondFront.get(i);
             assertTrue(a.r >= 1 && a.r <= 3);
-            assertTrue(a.m >= 0.1 && a.m <= 1.0);
+            assertTrue(a.mWth >= 0.35 && a.mWth <= 2.0);
+            assertTrue(a.mBth >= 0.35 && a.mBth <= 2.0);
             assertTrue(Double.isFinite(a.entropy));
+            assertTrue(a.entropy >= 0.0 && a.entropy <= 1.0);
             assertTrue(Double.isFinite(a.ssim));
             assertEquals(a.r, b.r);
-            assertEquals(a.m, b.m, 1e-12);
+            assertEquals(a.mWth, b.mWth, 1e-12);
+            assertEquals(a.mBth, b.mBth, 1e-12);
             assertEquals(a.entropy, b.entropy, 1e-12);
             assertEquals(a.ssim, b.ssim, 1e-12);
 
@@ -201,7 +209,7 @@ class SMPSOTopHatFusionTest {
         // Cache creada una sola vez y reutilizada por dos corridas distintas,
         // tal como hace BatchRunner al procesar varias configuraciones del mismo par.
         SMPSO_TopHat_Fusion.FusionCache sharedCache = new SMPSO_TopHat_Fusion.FusionCache(
-                visibleFixture(), infraredFixture(), 0, 1, 3, 0.1, 1.0);
+                ctFixture(), mriFixture(), 1, 3, 0.35, 2.0, 0.35, 2.0);
         SMPSO_TopHat_Fusion.Optimizer sharedRunA = new SMPSO_TopHat_Fusion.Optimizer(
                 sharedCache, swarmSize, iterations, archiveSize, seedA);
         SMPSO_TopHat_Fusion.Optimizer sharedRunB = new SMPSO_TopHat_Fusion.Optimizer(
@@ -209,9 +217,11 @@ class SMPSOTopHatFusionTest {
 
         // Cache independiente por corrida (constructor de conveniencia, como antes del refactor).
         SMPSO_TopHat_Fusion.Optimizer independentRunA = new SMPSO_TopHat_Fusion.Optimizer(
-                visibleFixture(), infraredFixture(), 0, 1, 3, 0.1, 1.0, swarmSize, iterations, archiveSize, seedA);
+                ctFixture(), mriFixture(), 1, 3, 0.35, 2.0, 0.35, 2.0,
+                swarmSize, iterations, archiveSize, seedA);
         SMPSO_TopHat_Fusion.Optimizer independentRunB = new SMPSO_TopHat_Fusion.Optimizer(
-                visibleFixture(), infraredFixture(), 0, 1, 3, 0.1, 1.0, swarmSize, iterations, archiveSize, seedB);
+                ctFixture(), mriFixture(), 1, 3, 0.35, 2.0, 0.35, 2.0,
+                swarmSize, iterations, archiveSize, seedB);
 
         List<SMPSO_TopHat_Fusion.Solution> sharedFrontA = sorted(sharedRunA.run());
         List<SMPSO_TopHat_Fusion.Solution> independentFrontA = sorted(independentRunA.run());
@@ -229,11 +239,11 @@ class SMPSOTopHatFusionTest {
     @Test
     void fusionCacheFuseMatchesUncachedComputation() {
         SMPSO_TopHat_Fusion.FusionCache cache = new SMPSO_TopHat_Fusion.FusionCache(
-                visibleFixture(), infraredFixture(), 0, 1, 3, 0.1, 1.0);
+                ctFixture(), mriFixture(), 1, 3, 0.35, 2.0, 0.35, 2.0);
 
         for (int r = 1; r <= 3; r++) {
-            FloatProcessor cached = cache.fuse(r, 0.75);
-            FloatProcessor direct = referenceFuse(visibleFixture(), infraredFixture(), r, 0.75);
+            FloatProcessor cached = cache.fuse(r, 0.75, 1.25);
+            FloatProcessor direct = referenceFuse(ctFixture(), mriFixture(), r, 0.75, 1.25);
             float[] cachedPixels = (float[]) cached.getPixels();
             float[] directPixels = (float[]) direct.getPixels();
             assertEquals(directPixels.length, cachedPixels.length);
@@ -250,35 +260,38 @@ class SMPSOTopHatFusionTest {
             SMPSO_TopHat_Fusion.Solution a = expected.get(i);
             SMPSO_TopHat_Fusion.Solution b = actual.get(i);
             assertEquals(a.r, b.r);
-            assertEquals(a.m, b.m, 1e-12);
+            assertEquals(a.mWth, b.mWth, 1e-12);
+            assertEquals(a.mBth, b.mBth, 1e-12);
             assertEquals(a.entropy, b.entropy, 1e-12);
             assertEquals(a.ssim, b.ssim, 1e-12);
         }
     }
 
-    private static FloatProcessor referenceFuse(FloatProcessor vis, FloatProcessor ir, int r, double m) {
-        FloatProcessor wthIr = SMPSO_TopHat_Fusion.whiteTopHat(ir, r);
-        FloatProcessor wthVis = SMPSO_TopHat_Fusion.whiteTopHat(vis, r);
-        FloatProcessor bthIr = SMPSO_TopHat_Fusion.blackTopHat(ir, r);
-        FloatProcessor bthVis = SMPSO_TopHat_Fusion.blackTopHat(vis, r);
-        int w = vis.getWidth(), h = vis.getHeight();
+    private static FloatProcessor referenceFuse(FloatProcessor ct, FloatProcessor mri, int r,
+                                                 double mWth, double mBth) {
+        FloatProcessor wthCt = SMPSO_TopHat_Fusion.whiteTopHat(ct, r);
+        FloatProcessor wthMri = SMPSO_TopHat_Fusion.whiteTopHat(mri, r);
+        FloatProcessor bthCt = SMPSO_TopHat_Fusion.blackTopHat(ct, r);
+        FloatProcessor bthMri = SMPSO_TopHat_Fusion.blackTopHat(mri, r);
+        int w = ct.getWidth(), h = ct.getHeight();
         FloatProcessor out = new FloatProcessor(w, h);
-        float[] irPix = (float[]) ir.getPixels();
-        float[] visPix = (float[]) vis.getPixels();
-        float[] wIr = (float[]) wthIr.getPixels();
-        float[] wVis = (float[]) wthVis.getPixels();
-        float[] bIr = (float[]) bthIr.getPixels();
-        float[] bVis = (float[]) bthVis.getPixels();
+        float[] ctPixels = (float[]) ct.getPixels();
+        float[] mriPixels = (float[]) mri.getPixels();
+        float[] wCt = (float[]) wthCt.getPixels();
+        float[] wMri = (float[]) wthMri.getPixels();
+        float[] bCt = (float[]) bthCt.getPixels();
+        float[] bMri = (float[]) bthMri.getPixels();
         float[] fused = (float[]) out.getPixels();
         for (int i = 0; i < fused.length; i++) {
-            double base = 0.5 * (visPix[i] + irPix[i]);
-            double value = base + m * Math.max(wIr[i], wVis[i]) - m * Math.max(bIr[i], bVis[i]);
+            double base = 0.5 * (ctPixels[i] + mriPixels[i]);
+            double value = base + mWth * Math.max(wCt[i], wMri[i])
+                    - mBth * Math.max(bCt[i], bMri[i]);
             fused[i] = (float) SMPSO_TopHat_Fusion.clamp(value, 0.0, 255.0);
         }
         return out;
     }
 
-    private static FloatProcessor visibleFixture() {
+    private static FloatProcessor ctFixture() {
         return new FloatProcessor(5, 5, new float[]{
                 0, 10, 20, 30, 40,
                 15, 25, 35, 45, 55,
@@ -288,7 +301,7 @@ class SMPSOTopHatFusionTest {
         });
     }
 
-    private static FloatProcessor infraredFixture() {
+    private static FloatProcessor mriFixture() {
         return new FloatProcessor(5, 5, new float[]{
                 100, 90, 80, 70, 60,
                 85, 75, 65, 55, 45,
@@ -305,27 +318,27 @@ class SMPSOTopHatFusionTest {
     }
 
     private static SMPSO_TopHat_Fusion.Solution solution(double entropy, double ssim) {
-        return new SMPSO_TopHat_Fusion.Solution(1, 1.0, entropy, ssim);
+        return new SMPSO_TopHat_Fusion.Solution(1, 1.0, 1.0, entropy, ssim);
     }
 
     private static SMPSO_TopHat_Fusion.Optimizer optimizer(long seed, int swarmSize,
                                                             int iterations, int archiveSize) {
-        FloatProcessor visible = new FloatProcessor(5, 5, new float[]{
+        FloatProcessor ct = new FloatProcessor(5, 5, new float[]{
                 0, 10, 20, 30, 40,
                 15, 25, 35, 45, 55,
                 30, 40, 50, 60, 70,
                 45, 55, 65, 75, 85,
                 60, 70, 80, 90, 100
         });
-        FloatProcessor infrared = new FloatProcessor(5, 5, new float[]{
+        FloatProcessor mri = new FloatProcessor(5, 5, new float[]{
                 100, 90, 80, 70, 60,
                 85, 75, 65, 55, 45,
                 70, 60, 50, 40, 30,
                 55, 45, 35, 25, 15,
                 40, 30, 20, 10, 0
         });
-        return new SMPSO_TopHat_Fusion.Optimizer(visible, infrared, 0,
-                1, 3, 0.1, 1.0, swarmSize, iterations, archiveSize, seed);
+        return new SMPSO_TopHat_Fusion.Optimizer(ct, mri,
+                1, 3, 0.35, 2.0, 0.35, 2.0, swarmSize, iterations, archiveSize, seed);
     }
 
     private static List<SMPSO_TopHat_Fusion.Solution> sorted(
@@ -334,7 +347,8 @@ class SMPSOTopHatFusionTest {
                 new ArrayList<SMPSO_TopHat_Fusion.Solution>(front);
         Collections.sort(copy, Comparator
                 .comparingInt((SMPSO_TopHat_Fusion.Solution s) -> s.r)
-                .thenComparingDouble(s -> s.m));
+                .thenComparingDouble(s -> s.mWth)
+                .thenComparingDouble(s -> s.mBth));
         return copy;
     }
 }

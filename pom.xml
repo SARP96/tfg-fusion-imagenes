@@ -10,7 +10,7 @@
     <packaging>jar</packaging>
 
     <name>SMPSO Top-Hat Image Fusion</name>
-    <description>Plugin de Fiji/ImageJ para fusion visible-infrarroja mediante SMPSO y Top-Hat.</description>
+    <description>Plugin de Fiji/ImageJ para fusion CT-MRI mediante SMPSO y Top-Hat.</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

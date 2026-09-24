@@ -21,11 +21,13 @@ import java.util.Random;
 import java.util.Set;
 
 /**
- * Plugin de Fiji/ImageJ para fusionar una imagen visible y una infrarroja.
+ * Plugin de Fiji/ImageJ para fusionar un par registrado CT-MRI.
  *
- * <p>Entradas principales: dos imagenes registradas, limites de los parametros
- * {@code r} y {@code m}, y configuracion del enjambre. La optimizacion maximiza
- * simultaneamente la entropia y el SSIM promedio de la imagen fusionada.</p>
+ * <p>Entradas principales: dos imagenes registradas, limites de {@code r} y
+ * configuracion del enjambre. Los pesos {@code mWTH} y {@code mBTH} se
+ * inicializan y optimizan en el rango metodologico fijo [0.35,2]. La
+ * optimizacion maximiza simultaneamente la entropia normalizada y el SSIM
+ * global promedio de la imagen fusionada.</p>
  *
  * <p>Salidas principales: archivo de soluciones no dominadas, tabla de
  * resultados, grafico del frente de Pareto e imagenes fusionadas opcionales.</p>
@@ -40,6 +42,10 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
     /** Constante de estabilidad para la comparacion de contraste/estructura en SSIM. */
     private static final double SSIM_C2 = (0.03 * L) * (0.03 * L);
 
+    /** Limites metodologicos acordados para ambos pesos de contraste. */
+    static final double CONTRAST_WEIGHT_MIN = 0.35;
+    static final double CONTRAST_WEIGHT_MAX = 2.0;
+
     /*
      * Parametros del SMPSO de referencia. PT-CLAHE informa los rangos de c1,
      * c2, r1 y r2, y limita cada velocidad a la mitad del rango de su variable.
@@ -52,7 +58,7 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
     static final double SMPSO_INERTIA_WEIGHT = 0.1;
     static final double SMPSO_BOUNDARY_VELOCITY_CHANGE = -1.0;
     static final int SMPSO_MUTATION_FREQUENCY = 6;
-    static final double SMPSO_MUTATION_PROBABILITY = 0.5; // 1 / 2 variables.
+    static final double SMPSO_MUTATION_PROBABILITY = 1.0 / 3.0; // 1 / 3 variables.
     static final double SMPSO_MUTATION_DISTRIBUTION_INDEX = 20.0;
 
     /**
@@ -69,7 +75,7 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         // Recupera los identificadores de todas las imagenes abiertas en Fiji.
         int[] ids = WindowManager.getIDList();
         if (ids == null || ids.length < 2) {
-            IJ.error("SMPSO Top-Hat Fusion", "Abra al menos dos imagenes: visible e infrarroja.");
+            IJ.error("SMPSO Top-Hat Fusion", "Abra al menos dos imagenes: CT y MRI.");
             return;
         }
 
@@ -79,13 +85,10 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
 
         // Define las entradas del usuario y sus valores iniciales sugeridos.
         GenericDialog gd = new GenericDialog("SMPSO Top-Hat Fusion");
-        gd.addChoice("Imagen visible", titles, titles[0]);
-        gd.addChoice("Imagen infrarroja", titles, titles[Math.min(1, titles.length - 1)]);
-        gd.addChoice("Imagen base Ib", new String[]{"Promedio VIS/IR", "Visible", "Infrarroja"}, "Promedio VIS/IR");
+        gd.addChoice("Imagen CT", titles, titles[0]);
+        gd.addChoice("Imagen MRI", titles, titles[Math.min(1, titles.length - 1)]);
         gd.addNumericField("Radio minimo r", 1, 0);
         gd.addNumericField("Radio maximo r", 15, 0);
-        gd.addNumericField("Peso minimo m", 0.10, 2);
-        gd.addNumericField("Peso maximo m", 2.00, 2);
         gd.addNumericField("Tamano del enjambre", 30, 0);
         gd.addNumericField("Iteraciones", 80, 0);
         gd.addNumericField("Tamano maximo del archivo Pareto", 30, 0);
@@ -95,14 +98,14 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         if (gd.wasCanceled()) return;
 
         // Lee los campos en el mismo orden en que fueron agregados al dialogo.
-        ImagePlus visImp = WindowManager.getImage(ids[gd.getNextChoiceIndex()]);
-        ImagePlus irImp = WindowManager.getImage(ids[gd.getNextChoiceIndex()]);
-        // baseMode: 0 = promedio, 1 = visible, 2 = infrarroja.
-        int baseMode = gd.getNextChoiceIndex();
+        ImagePlus ctImp = WindowManager.getImage(ids[gd.getNextChoiceIndex()]);
+        ImagePlus mriImp = WindowManager.getImage(ids[gd.getNextChoiceIndex()]);
         int rMin = (int) gd.getNextNumber();
         int rMax = (int) gd.getNextNumber();
-        double mMin = gd.getNextNumber();
-        double mMax = gd.getNextNumber();
+        double mWthMin = CONTRAST_WEIGHT_MIN;
+        double mWthMax = CONTRAST_WEIGHT_MAX;
+        double mBthMin = CONTRAST_WEIGHT_MIN;
+        double mBthMax = CONTRAST_WEIGHT_MAX;
         int swarmSize = (int) gd.getNextNumber();
         int iterations = (int) gd.getNextNumber();
         int archiveSize = (int) gd.getNextNumber();
@@ -110,18 +113,19 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         boolean showParetoImages = gd.getNextBoolean();
 
         // Detiene la ejecucion si las imagenes o los rangos no son validos.
-        if (!validInputs(visImp, irImp, rMin, rMax, mMin, mMax, swarmSize, iterations, archiveSize)) return;
+        if (!validInputs(ctImp, mriImp, rMin, rMax, mWthMin, mWthMax,
+                mBthMin, mBthMax, swarmSize, iterations, archiveSize)) return;
 
         // Convierte las fuentes a escala de grises flotante para la morfologia.
-        FloatProcessor vis = toGrayFloat(visImp);
-        FloatProcessor ir = toGrayFloat(irImp);
-        Optimizer optimizer = new Optimizer(vis, ir, baseMode, rMin, rMax, mMin, mMax,
-                swarmSize, iterations, archiveSize, seed);
+        FloatProcessor ct = toGrayFloat(ctImp);
+        FloatProcessor mri = toGrayFloat(mriImp);
+        Optimizer optimizer = new Optimizer(ct, mri, rMin, rMax,
+                mWthMin, mWthMax, mBthMin, mBthMax, swarmSize, iterations, archiveSize, seed);
 
         IJ.showStatus("Ejecutando SMPSO Top-Hat...");
         List<Solution> pareto = optimizer.run();
-        // El orden por r y m facilita comparar parametros en la tabla final.
-        Collections.sort(pareto, Comparator.comparingInt((Solution s) -> s.r).thenComparingDouble(s -> s.m));
+        Collections.sort(pareto, Comparator.comparingInt((Solution s) -> s.r)
+                .thenComparingDouble(s -> s.mWth).thenComparingDouble(s -> s.mBth));
         showResults(pareto, optimizer, showParetoImages);
         IJ.showStatus("SMPSO Top-Hat finalizado: " + pareto.size() + " soluciones Pareto.");
     }
@@ -129,24 +133,27 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
     /**
      * Comprueba que las entradas permitan ejecutar la fusion.
      *
-     * @param visImp imagen visible seleccionada
-     * @param irImp imagen infrarroja seleccionada
+     * @param ctImp imagen CT seleccionada
+     * @param mriImp imagen MRI seleccionada
      * @param rMin radio entero minimo
      * @param rMax radio entero maximo
-     * @param mMin peso de contraste minimo
-     * @param mMax peso de contraste maximo
+     * @param mWthMin peso WTH minimo
+     * @param mWthMax peso WTH maximo
+     * @param mBthMin peso BTH minimo
+     * @param mBthMax peso BTH maximo
      * @param swarmSize cantidad de particulas
      * @param iterations cantidad de iteraciones
      * @param archiveSize capacidad del archivo Pareto
      * @return {@code true} si todas las entradas son validas; {@code false} en caso contrario
      */
-    private boolean validInputs(ImagePlus visImp, ImagePlus irImp, int rMin, int rMax, double mMin, double mMax,
+    private boolean validInputs(ImagePlus ctImp, ImagePlus mriImp, int rMin, int rMax,
+                                double mWthMin, double mWthMax, double mBthMin, double mBthMax,
                                 int swarmSize, int iterations, int archiveSize) {
-        if (visImp == null || irImp == null) {
+        if (ctImp == null || mriImp == null) {
             IJ.error("SMPSO Top-Hat Fusion", "No se pudieron leer las imagenes seleccionadas.");
             return false;
         }
-        if (visImp.getWidth() != irImp.getWidth() || visImp.getHeight() != irImp.getHeight()) {
+        if (ctImp.getWidth() != mriImp.getWidth() || ctImp.getHeight() != mriImp.getHeight()) {
             IJ.error("SMPSO Top-Hat Fusion", "Las imagenes deben tener el mismo ancho y alto.");
             return false;
         }
@@ -154,8 +161,8 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
             IJ.error("SMPSO Top-Hat Fusion", "Use radios con 1 <= r_min <= r_max.");
             return false;
         }
-        if (mMax < mMin) {
-            IJ.error("SMPSO Top-Hat Fusion", "Use pesos con m_min <= m_max.");
+        if (mWthMin < 0.0 || mWthMax < mWthMin || mBthMin < 0.0 || mBthMax < mBthMin) {
+            IJ.error("SMPSO Top-Hat Fusion", "Use limites validos para mWTH y mBTH.");
             return false;
         }
         if (swarmSize < 4 || iterations < 1 || archiveSize < 2) {
@@ -211,23 +218,26 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
             rt.incrementCounter();
             rt.addValue("idx", i + 1);
             rt.addValue("r", s.r);
-            rt.addValue("m", s.m);
-            rt.addValue("Entropia_f1", s.entropy);
+            rt.addValue("mWTH", s.mWth);
+            rt.addValue("mBTH", s.mBth);
+            rt.addValue("Entropia_normalizada_f1", s.entropy);
             rt.addValue("SSIM_promedio_f2", s.ssim);
             entropy[i] = s.entropy;
             ssim[i] = s.ssim;
 
             if (showParetoImages) {
                 // Reconstruye la imagen usando exactamente los parametros de la fila.
-                FloatProcessor fused = optimizer.fuse(s.r, s.m);
-                new ImagePlus(String.format("Pareto_%02d_r%d_m%.3f", i + 1, s.r, s.m), fused).show();
+                FloatProcessor fused = optimizer.fuse(s.r, s.mWth, s.mBth);
+                new ImagePlus(String.format("Pareto_%02d_r%d_mW%.3f_mB%.3f",
+                        i + 1, s.r, s.mWth, s.mBth), fused).show();
             }
         }
 
         rt.show("Pareto SMPSO Top-Hat");
         if (!pareto.isEmpty()) {
             // Cada punto del grafico corresponde a una imagen fusionada distinta.
-            Plot plot = new Plot("Frente de Pareto", "Entropia f1", "SSIM promedio f2", entropy, ssim);
+            Plot plot = new Plot("Frente de Pareto", "Entropia normalizada f1",
+                    "SSIM global promedio f2", entropy, ssim);
             plot.setColor(java.awt.Color.BLUE);
             plot.addPoints(entropy, ssim, Plot.CIRCLE);
             plot.show();
@@ -235,11 +245,11 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
     }
 
     /**
-     * Precalcula y conserva los mapas Top-Hat (WTH/BTH, VIS/IR) para cada
+     * Precalcula y conserva los maximos Top-Hat (WTH/BTH, CT/MRI) para cada
      * radio entero factible de un par de imagenes.
      *
      * <p>{@code r} solo toma {@code rMax-rMin+1} valores enteros posibles y la
-     * morfologia no depende de {@code m}. Calcularla una sola vez por par y
+     * morfologia no depende de los pesos. Calcularla una sola vez por par y
      * reutilizarla en todas las evaluaciones (de una corrida o de muchas
      * corridas/configuraciones sobre el mismo par, como hace {@link BatchRunner})
      * evita repetir la parte mas costosa de {@code fuse} en cada evaluacion.</p>
@@ -248,109 +258,91 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
      * que puede compartirse entre hilos sin sincronizacion adicional.</p>
      */
     static class FusionCache {
-        final FloatProcessor vis;
-        final FloatProcessor ir;
-        final int baseMode;
+        final FloatProcessor ct;
+        final FloatProcessor mri;
         final int width;
         final int height;
         final int rMin;
         final int rMax;
-        final double mMin;
-        final double mMax;
+        final double mWthMin;
+        final double mWthMax;
+        final double mBthMin;
+        final double mBthMax;
 
-        private final FloatProcessor[] wthIrByR;
-        private final FloatProcessor[] wthVisByR;
-        private final FloatProcessor[] bthIrByR;
-        private final FloatProcessor[] bthVisByR;
+        private final FloatProcessor base;
+        private final FloatProcessor[] maxWthByR;
+        private final FloatProcessor[] maxBthByR;
 
-        /**
-         * Precalcula la morfologia para todo el rango factible de {@code r}.
-         *
-         * @param vis imagen visible en escala de grises
-         * @param ir imagen infrarroja en escala de grises
-         * @param baseMode seleccion de la imagen base
-         * @param rMin radio minimo permitido
-         * @param rMax radio maximo permitido
-         * @param mMin peso minimo permitido
-         * @param mMax peso maximo permitido
-         */
-        FusionCache(FloatProcessor vis, FloatProcessor ir, int baseMode,
-                    int rMin, int rMax, double mMin, double mMax) {
-            this.vis = vis;
-            this.ir = ir;
-            this.baseMode = baseMode;
-            this.width = vis.getWidth();
-            this.height = vis.getHeight();
+        /** Precalcula los dos mapas maximos consumidos por la ecuacion de fusion. */
+        FusionCache(FloatProcessor ct, FloatProcessor mri, int rMin, int rMax,
+                    double mWthMin, double mWthMax, double mBthMin, double mBthMax) {
+            this.ct = ct;
+            this.mri = mri;
+            this.width = ct.getWidth();
+            this.height = ct.getHeight();
             this.rMin = rMin;
             this.rMax = rMax;
-            this.mMin = mMin;
-            this.mMax = mMax;
+            this.mWthMin = mWthMin;
+            this.mWthMax = mWthMax;
+            this.mBthMin = mBthMin;
+            this.mBthMax = mBthMax;
+            this.base = average(ct, mri);
+            this.maxWthByR = new FloatProcessor[rMax + 1];
+            this.maxBthByR = new FloatProcessor[rMax + 1];
 
-            // RankFilters coordina sus propios hilos con contadores atomicos pensados
-            // para ser accionados desde PlugInFilterRunner. Invocado directamente (como
-            // aqui) con mas de un hilo puede bloquearse o dejar hilos activos. Se fuerza
-            // un solo hilo y el paralelismo se hace afuera, entre corridas independientes.
+            int previousThreads = Prefs.getThreads();
             Prefs.setThreads(1);
-
-            this.wthIrByR = new FloatProcessor[rMax + 1];
-            this.wthVisByR = new FloatProcessor[rMax + 1];
-            this.bthIrByR = new FloatProcessor[rMax + 1];
-            this.bthVisByR = new FloatProcessor[rMax + 1];
-            for (int r = rMin; r <= rMax; r++) {
-                wthIrByR[r] = whiteTopHat(ir, r);
-                wthVisByR[r] = whiteTopHat(vis, r);
-                bthIrByR[r] = blackTopHat(ir, r);
-                bthVisByR[r] = blackTopHat(vis, r);
+            try {
+                for (int r = rMin; r <= rMax; r++) {
+                    maxWthByR[r] = pixelwiseMax(whiteTopHat(ct, r), whiteTopHat(mri, r));
+                    maxBthByR[r] = pixelwiseMax(blackTopHat(ct, r), blackTopHat(mri, r));
+                }
+            } finally {
+                Prefs.setThreads(previousThreads);
             }
         }
 
-        /**
-         * Genera una imagen fusionada reutilizando la morfologia precalculada.
-         *
-         * @param r radio del elemento estructurante; debe estar en [rMin, rMax]
-         * @param m peso aplicado a los detalles Top-Hat
-         * @return nueva imagen Ifus en el rango [0, 255]
-         */
-        FloatProcessor fuse(int r, double m) {
+        /** Genera Ifus usando la base promedio y pesos WTH/BTH independientes. */
+        FloatProcessor fuse(int r, double mWth, double mBth) {
             FloatProcessor out = new FloatProcessor(width, height);
-            float[] irPix = (float[]) ir.getPixels();
-            float[] visPix = (float[]) vis.getPixels();
-            float[] wIr = (float[]) wthIrByR[r].getPixels();
-            float[] wVis = (float[]) wthVisByR[r].getPixels();
-            float[] bIr = (float[]) bthIrByR[r].getPixels();
-            float[] bVis = (float[]) bthVisByR[r].getPixels();
+            float[] basePixels = (float[]) base.getPixels();
+            float[] maxWth = (float[]) maxWthByR[r].getPixels();
+            float[] maxBth = (float[]) maxBthByR[r].getPixels();
             float[] fused = (float[]) out.getPixels();
-
             for (int i = 0; i < fused.length; i++) {
-                double base;
-                if (baseMode == 1) base = visPix[i];
-                else if (baseMode == 2) base = irPix[i];
-                else base = 0.5 * (visPix[i] + irPix[i]);
-
-                double value = base + m * Math.max(wIr[i], wVis[i]) - m * Math.max(bIr[i], bVis[i]);
+                double value = basePixels[i] + mWth * maxWth[i] - mBth * maxBth[i];
                 fused[i] = (float) clamp(value, 0.0, 255.0);
             }
             return out;
         }
 
-        /**
-         * Evalua una posicion del enjambre reutilizando la cache de morfologia.
-         *
-         * <p>No incrementa ningun contador: es un metodo sin estado mutable,
-         * seguro para invocarse concurrentemente desde varios {@link Optimizer}
-         * que comparten esta misma cache.</p>
-         *
-         * @param rPosition posicion continua del radio; se redondea a entero
-         * @param mPosition posicion continua del peso de contraste
-         * @return solucion con parametros factibles, entropia y SSIM promedio
-         */
-        Solution evaluate(double rPosition, double mPosition) {
+        /** Evalua una posicion sin mantener estado mutable de la corrida. */
+        Solution evaluate(double rPosition, double mWthPosition, double mBthPosition) {
             int r = (int) Math.round(clamp(rPosition, rMin, rMax));
-            double m = clamp(mPosition, mMin, mMax);
-            FloatProcessor fused = fuse(r, m);
+            double mWth = clamp(mWthPosition, mWthMin, mWthMax);
+            double mBth = clamp(mBthPosition, mBthMin, mBthMax);
+            FloatProcessor fused = fuse(r, mWth, mBth);
             double entropy = entropy(fused);
-            double ssim = 0.5 * (ssim(fused, vis) + ssim(fused, ir));
-            return new Solution(r, m, entropy, ssim);
+            double ssim = 0.5 * (ssim(fused, ct) + ssim(fused, mri));
+            return new Solution(r, mWth, mBth, entropy, ssim);
+        }
+
+        private static FloatProcessor average(FloatProcessor first, FloatProcessor second) {
+            FloatProcessor out = new FloatProcessor(first.getWidth(), first.getHeight());
+            float[] a = (float[]) first.getPixels();
+            float[] b = (float[]) second.getPixels();
+            float[] result = (float[]) out.getPixels();
+            for (int i = 0; i < result.length; i++) result[i] = 0.5f * (a[i] + b[i]);
+            return out;
+        }
+
+        private static FloatProcessor pixelwiseMax(FloatProcessor first, FloatProcessor second) {
+            FloatProcessor out = new FloatProcessor(first.getWidth(), first.getHeight());
+            float[] a = (float[]) first.getPixels();
+            float[] b = (float[]) second.getPixels();
+            float[] result = (float[]) out.getPixels();
+            for (int i = 0; i < result.length; i++) result[i] = Math.max(a[i], b[i]);
+            return out;
         }
     }
 
@@ -362,11 +354,13 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         /** Morfologia precalculada del par de imagenes; de solo lectura. */
         private final FusionCache cache;
 
-        /** Limites del espacio de decision (r, m), copiados de la cache. */
+        /** Limites del espacio de decision, copiados de la cache. */
         private final int rMin;
         private final int rMax;
-        private final double mMin;
-        private final double mMax;
+        private final double mWthMin;
+        private final double mWthMax;
+        private final double mBthMin;
+        private final double mBthMax;
 
         /** Configuracion de la busqueda y del archivo externo. */
         private final int swarmSize;
@@ -399,8 +393,10 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
             this.cache = cache;
             this.rMin = cache.rMin;
             this.rMax = cache.rMax;
-            this.mMin = cache.mMin;
-            this.mMax = cache.mMax;
+            this.mWthMin = cache.mWthMin;
+            this.mWthMax = cache.mWthMax;
+            this.mBthMin = cache.mBthMin;
+            this.mBthMax = cache.mBthMax;
             this.swarmSize = swarmSize;
             this.iterations = iterations;
             this.archiveSize = archiveSize;
@@ -409,24 +405,25 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
 
         /**
          * Constructor de conveniencia: crea su propia cache de morfologia para
-         * un unico par de imagenes. Preserva el comportamiento y la firma que
-         * ya usaban el plugin interactivo y las pruebas existentes.
+         * un unico par de imagenes. Lo usan el plugin interactivo y las pruebas.
          *
-         * @param vis imagen visible en escala de grises
-         * @param ir imagen infrarroja en escala de grises
-         * @param baseMode seleccion de la imagen base
+         * @param ct imagen CT en escala de grises
+         * @param mri imagen MRI en escala de grises
          * @param rMin radio minimo permitido
          * @param rMax radio maximo permitido
-         * @param mMin peso minimo permitido
-         * @param mMax peso maximo permitido
+         * @param mWthMin peso WTH minimo
+         * @param mWthMax peso WTH maximo
+         * @param mBthMin peso BTH minimo
+         * @param mBthMax peso BTH maximo
          * @param swarmSize cantidad de particulas
          * @param iterations cantidad de iteraciones
          * @param archiveSize capacidad maxima del archivo Pareto
          * @param seed semilla usada para reproducir la ejecucion
          */
-        Optimizer(FloatProcessor vis, FloatProcessor ir, int baseMode, int rMin, int rMax, double mMin, double mMax,
+        Optimizer(FloatProcessor ct, FloatProcessor mri, int rMin, int rMax,
+                  double mWthMin, double mWthMax, double mBthMin, double mBthMax,
                   int swarmSize, int iterations, int archiveSize, long seed) {
-            this(new FusionCache(vis, ir, baseMode, rMin, rMax, mMin, mMax),
+            this(new FusionCache(ct, mri, rMin, rMax, mWthMin, mWthMax, mBthMin, mBthMax),
                     swarmSize, iterations, archiveSize, seed);
         }
 
@@ -441,9 +438,10 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
             // La inicializacion de referencia usa posiciones aleatorias y velocidad cero.
             for (int i = 0; i < swarmSize; i++) {
                 double r = rMin + random.nextDouble() * (rMax - rMin);
-                double m = mMin + random.nextDouble() * (mMax - mMin);
-                Solution s = evaluate(r, m);
-                swarm[i] = new Particle(r, m, 0.0, 0.0, s);
+                double mWth = randomInRange(mWthMin, mWthMax);
+                double mBth = randomInRange(mBthMin, mBthMax);
+                Solution s = evaluate(r, mWth, mBth);
+                swarm[i] = new Particle(r, mWth, mBth, 0.0, 0.0, 0.0, s);
                 addToArchive(s);
             }
 
@@ -469,7 +467,8 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
 
                 Solution[] current = new Solution[swarmSize];
                 for (int i = 0; i < swarmSize; i++) {
-                    current[i] = evaluate(swarm[i].rPosition, swarm[i].mPosition);
+                    current[i] = evaluate(swarm[i].rPosition,
+                            swarm[i].mWthPosition, swarm[i].mBthPosition);
                 }
 
                 // El archivo se actualiza con el enjambre completo ya evaluado.
@@ -494,11 +493,12 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
          * reutilizando la morfologia precalculada en la cache.
          *
          * @param r radio del elemento estructurante
-         * @param m peso aplicado a los detalles Top-Hat
+         * @param mWth peso aplicado a los detalles claros
+         * @param mBth peso aplicado a los detalles oscuros
          * @return nueva imagen Ifus en el rango [0, 255]
          */
-        FloatProcessor fuse(int r, double m) {
-            return cache.fuse(r, m);
+        FloatProcessor fuse(int r, double mWth, double mBth) {
+            return cache.fuse(r, mWth, mBth);
         }
 
         /**
@@ -506,17 +506,18 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
          * llevando la cuenta de evaluaciones de esta corrida en particular.
          *
          * @param rPosition posicion continua del radio; se redondea a entero
-         * @param mPosition posicion continua del peso de contraste
+         * @param mWthPosition posicion continua del peso WTH
+         * @param mBthPosition posicion continua del peso BTH
          * @return solucion con parametros factibles, entropia y SSIM promedio
          */
-        private Solution evaluate(double rPosition, double mPosition) {
-            Solution solution = cache.evaluate(rPosition, mPosition);
+        private Solution evaluate(double rPosition, double mWthPosition, double mBthPosition) {
+            Solution solution = cache.evaluate(rPosition, mWthPosition, mBthPosition);
             evaluations++;
             return solution;
         }
 
         /**
-         * Actualiza la velocidad en las dimensiones r y m.
+         * Actualiza la velocidad en las dimensiones r, mWTH y mBTH.
          *
          * @param p particula que sera modificada
          * @param leader solucion del archivo que orienta el movimiento social
@@ -529,17 +530,21 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
             double r2 = random.nextDouble();
             double constriction = constrictionCoefficient(c1 + c2);
 
-            // Se usan los mismos r1 y r2 para ambas dimensiones de la particula.
+            // Se usan los mismos r1 y r2 para las tres dimensiones de la particula.
             p.rVelocity = constriction * (SMPSO_INERTIA_WEIGHT * p.rVelocity
                     + c1 * r1 * (p.best.r - p.rPosition)
                     + c2 * r2 * (leader.r - p.rPosition));
-            p.mVelocity = constriction * (SMPSO_INERTIA_WEIGHT * p.mVelocity
-                    + c1 * r1 * (p.best.m - p.mPosition)
-                    + c2 * r2 * (leader.m - p.mPosition));
+            p.mWthVelocity = constriction * (SMPSO_INERTIA_WEIGHT * p.mWthVelocity
+                    + c1 * r1 * (p.best.mWth - p.mWthPosition)
+                    + c2 * r2 * (leader.mWth - p.mWthPosition));
+            p.mBthVelocity = constriction * (SMPSO_INERTIA_WEIGHT * p.mBthVelocity
+                    + c1 * r1 * (p.best.mBth - p.mBthPosition)
+                    + c2 * r2 * (leader.mBth - p.mBthPosition));
 
             // Restriccion de velocidad caracteristica de SMPSO.
             p.rVelocity = clamp(p.rVelocity, -velocityLimitR(), velocityLimitR());
-            p.mVelocity = clamp(p.mVelocity, -velocityLimitM(), velocityLimitM());
+            p.mWthVelocity = clamp(p.mWthVelocity, -velocityLimitMWth(), velocityLimitMWth());
+            p.mBthVelocity = clamp(p.mBthVelocity, -velocityLimitMBth(), velocityLimitMBth());
         }
 
         /**
@@ -569,13 +574,22 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
                 p.rVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
             }
 
-            p.mPosition += p.mVelocity;
-            if (p.mPosition < mMin) {
-                p.mPosition = mMin;
-                p.mVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
-            } else if (p.mPosition > mMax) {
-                p.mPosition = mMax;
-                p.mVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
+            p.mWthPosition += p.mWthVelocity;
+            if (p.mWthPosition < mWthMin) {
+                p.mWthPosition = mWthMin;
+                p.mWthVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
+            } else if (p.mWthPosition > mWthMax) {
+                p.mWthPosition = mWthMax;
+                p.mWthVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
+            }
+
+            p.mBthPosition += p.mBthVelocity;
+            if (p.mBthPosition < mBthMin) {
+                p.mBthPosition = mBthMin;
+                p.mBthVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
+            } else if (p.mBthPosition > mBthMax) {
+                p.mBthPosition = mBthMax;
+                p.mBthVelocity *= SMPSO_BOUNDARY_VELOCITY_CHANGE;
             }
         }
 
@@ -590,9 +604,9 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         }
 
         /**
-         * Aplica mutacion polinomial de referencia a las dos variables.
+         * Aplica mutacion polinomial de referencia a las tres variables.
          *
-         * <p>Cada variable se muta con probabilidad 1/n=0.5. El indice de
+         * <p>Cada variable se muta con probabilidad 1/n=1/3. El indice de
          * distribucion 20 favorece cambios pequenos y permite saltos ocasionales.</p>
          *
          * @param p particula seleccionada por la frecuencia de mutacion
@@ -603,7 +617,11 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
                         SMPSO_MUTATION_DISTRIBUTION_INDEX, random.nextDouble());
             }
             if (random.nextDouble() <= SMPSO_MUTATION_PROBABILITY) {
-                p.mPosition = polynomialMutatedValue(p.mPosition, mMin, mMax,
+                p.mWthPosition = polynomialMutatedValue(p.mWthPosition, mWthMin, mWthMax,
+                        SMPSO_MUTATION_DISTRIBUTION_INDEX, random.nextDouble());
+            }
+            if (random.nextDouble() <= SMPSO_MUTATION_PROBABILITY) {
+                p.mBthPosition = polynomialMutatedValue(p.mBthPosition, mBthMin, mBthMax,
                         SMPSO_MUTATION_DISTRIBUTION_INDEX, random.nextDouble());
             }
         }
@@ -710,14 +728,15 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         /**
          * Elimina combinaciones repetidas de parametros del archivo final.
          *
-         * <p>La clave utiliza r entero y m redondeado a seis decimales.
+         * <p>La clave utiliza r entero y ambos pesos redondeados a seis decimales.
          * No devuelve valor: modifica {@code archive} directamente.</p>
          */
         private void removeDuplicateParameters() {
             Set<String> seen = new HashSet<String>();
             for (int i = archive.size() - 1; i >= 0; i--) {
                 Solution s = archive.get(i);
-                String key = s.r + ":" + String.format(java.util.Locale.US, "%.6f", s.m);
+                String key = s.r + ":" + String.format(java.util.Locale.US,
+                        "%.6f:%.6f", s.mWth, s.mBth);
                 if (seen.contains(key)) archive.remove(i);
                 else seen.add(key);
             }
@@ -733,8 +752,12 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
         /**
          * @return magnitud maxima permitida para la velocidad del peso
          */
-        private double velocityLimitM() {
-            return 0.5 * (mMax - mMin);
+        private double velocityLimitMWth() {
+            return 0.5 * (mWthMax - mWthMin);
+        }
+
+        private double velocityLimitMBth() {
+            return 0.5 * (mBthMax - mBthMin);
         }
 
         /**
@@ -755,18 +778,20 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
     /**
      * Estado movil de una particula del enjambre.
      *
-     * <p>La posicion representa una combinacion candidata (r, m), la velocidad
+     * <p>La posicion representa una combinacion candidata (r, mWTH, mBTH), la velocidad
      * indica el desplazamiento siguiente y {@code best} guarda su memoria
      * personal.</p>
      */
     static class Particle {
         /** Posiciones actuales; r se redondea solamente durante la evaluacion. */
         double rPosition;
-        double mPosition;
+        double mWthPosition;
+        double mBthPosition;
 
         /** Desplazamientos actuales en cada dimension del problema. */
         double rVelocity;
-        double mVelocity;
+        double mWthVelocity;
+        double mBthVelocity;
 
         /** Mejor solucion personal conocida por la particula. */
         Solution best;
@@ -775,29 +800,35 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
          * Inicializa una particula.
          *
          * @param rPosition posicion inicial del radio
-         * @param mPosition posicion inicial del peso
+         * @param mWthPosition posicion inicial del peso WTH
+         * @param mBthPosition posicion inicial del peso BTH
          * @param rVelocity velocidad inicial del radio
-         * @param mVelocity velocidad inicial del peso
+         * @param mWthVelocity velocidad inicial del peso WTH
+         * @param mBthVelocity velocidad inicial del peso BTH
          * @param best evaluacion inicial, usada como mejor memoria personal
          */
-        Particle(double rPosition, double mPosition, double rVelocity, double mVelocity, Solution best) {
+        Particle(double rPosition, double mWthPosition, double mBthPosition,
+                 double rVelocity, double mWthVelocity, double mBthVelocity, Solution best) {
             this.rPosition = rPosition;
-            this.mPosition = mPosition;
+            this.mWthPosition = mWthPosition;
+            this.mBthPosition = mBthPosition;
             this.rVelocity = rVelocity;
-            this.mVelocity = mVelocity;
+            this.mWthVelocity = mWthVelocity;
+            this.mBthVelocity = mBthVelocity;
             this.best = best;
         }
     }
 
     /**
-     * Evaluacion inmutable de una combinacion (r, m).
+     * Evaluacion inmutable de una combinacion (r, mWTH, mBTH).
      *
      * <p>Entropia y SSIM son los objetivos que se maximizan. La distancia de
      * crowding es mutable porque se recalcula segun el frente actual.</p>
      */
     static class Solution {
         final int r;
-        final double m;
+        final double mWth;
+        final double mBth;
         final double entropy;
         final double ssim;
         double crowding;
@@ -806,13 +837,15 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
          * Crea una solucion ya evaluada.
          *
          * @param r radio entero usado en la morfologia
-         * @param m peso de contraste usado en la fusion
-         * @param entropy entropia de la imagen fusionada
-         * @param ssim promedio del SSIM con VIS e IR
+         * @param mWth peso aplicado al White Top-Hat
+         * @param mBth peso aplicado al Black Top-Hat
+         * @param entropy entropia normalizada de la imagen fusionada
+         * @param ssim promedio del SSIM con CT y MRI
          */
-        Solution(int r, double m, double entropy, double ssim) {
+        Solution(int r, double mWth, double mBth, double entropy, double ssim) {
             this.r = r;
-            this.m = m;
+            this.mWth = mWth;
+            this.mBth = mBth;
             this.entropy = entropy;
             this.ssim = ssim;
         }
@@ -959,10 +992,10 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
     }
 
     /**
-     * Calcula la entropia de Shannon de una imagen de 8 bits.
+     * Calcula la entropia de Shannon normalizada de una imagen de 8 bits.
      *
      * @param fp imagen evaluada con intensidades esperadas en [0, 255]
-     * @return entropia en bits; su maximo teorico es 8 para 256 niveles
+     * @return entropia dividida por log2(256)=8, en el intervalo [0,1]
      */
     static double entropy(FloatProcessor fp) {
         // Cada posicion almacena la frecuencia de un nivel de gris.
@@ -980,7 +1013,7 @@ public class SMPSO_TopHat_Fusion implements PlugIn {
             // H = -sum(p * log2(p)).
             h -= p * (Math.log(p) / Math.log(2.0));
         }
-        return h;
+        return h / 8.0;
     }
 
     /**

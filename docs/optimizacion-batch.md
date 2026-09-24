@@ -13,7 +13,7 @@ ejecuta.
 
 Cada evaluación de SMPSO (`fuse` + entropía + SSIM) recalculaba, antes de esta
 optimización, la apertura y el cierre morfológico (Top-Hat blanco y negro,
-para VIS e IR) en cada llamada. Medido sobre el código real del proyecto:
+para CT y MRI) en cada llamada. Medido sobre el código real del proyecto:
 
 | Resolución | ms/evaluación (sin cache) |
 |---|---:|
@@ -36,15 +36,14 @@ según la resolución.
 ## Optimización 1: cache de morfología por `r`
 
 `r` es entero y acotado (por defecto 1–15): solo existen `rMax-rMin+1`
-combinaciones posibles de Top-Hat blanco/negro para VIS e IR, y esa
-morfología no depende de `m` ni de la corrida o configuración en curso —
+combinaciones posibles de Top-Hat blanco/negro para CT y MRI, y esa
+morfología no depende de `mWTH`, `mBTH` ni de la corrida o configuración —
 depende únicamente del par de imágenes y de `r`.
 
-`SMPSO_TopHat_Fusion.FusionCache` precalcula los cuatro mapas (`WTH_IR`,
-`WTH_VIS`, `BTH_IR`, `BTH_VIS`) para cada `r` factible **una sola vez por
-par**, en el constructor. `Optimizer.fuse()` y `Optimizer.evaluate()` ya no
-recalculan morfología: solo hacen la combinación lineal (que sí depende de
-`m`) más entropía y SSIM.
+`SMPSO_TopHat_Fusion.FusionCache` precalcula directamente los dos mapas máximos
+`max(WTH_CT,WTH_MRI)` y `max(BTH_CT,BTH_MRI)` para cada `r` factible **una sola
+vez por par**. `Optimizer.fuse()` y `Optimizer.evaluate()` solo hacen la
+combinación lineal con ambos pesos, más entropía y SSIM.
 
 Medido con el mismo código:
 
@@ -94,20 +93,18 @@ dejar hilos activos indefinidamente: se comprobó empíricamente al forzar
 `Prefs.setThreads()` a varios núcleos antes de una llamada directa a
 `rank()`.
 
-Por eso `FusionCache` fija `Prefs.setThreads(1)` antes de precalcular la
-morfología. Todo el paralelismo se hace en la capa externa (entre corridas
-independientes en `BatchRunner`), nunca dentro de una misma llamada a
-`RankFilters`.
+Por eso `FusionCache` usa temporalmente `Prefs.setThreads(1)` al precalcular la
+morfología y luego restaura el valor anterior. Todo el paralelismo se hace en la
+capa externa, entre corridas independientes.
 
 ## Qué no cambia
 
 - La ecuación de fusión, los objetivos (entropía, SSIM global) y los
   operadores SMPSO siguen siendo los de `docs/formulas.md`.
-- El plugin interactivo de Fiji no cambia su comportamiento ni su interfaz;
-  usa el mismo `Optimizer` con el constructor de conveniencia que crea su
-  propia `FusionCache` para un único par.
-- Los indicadores HV, IGD y Spacing siguen sin implementarse; `runs.csv` y
-  `fronts.csv` no los incluyen todavía.
+- El plugin interactivo y el batch usan el mismo `Optimizer` y la misma
+  `FusionCache`.
+- HV e IGD se calculan después de completar todas las corridas de cada par; no
+  cambian el movimiento del enjambre.
 
 ## Validación empírica a escala real
 
@@ -124,9 +121,8 @@ futuras, usar esa cifra real en vez de la del benchmark aislado.
 
 ## Otras palancas consideradas (no implementadas aquí)
 
-- **Presupuesto fijo de evaluaciones en vez de factorial completo en
-  partículas × generaciones**: decisión pendiente en
-  `docs/experimental-design.md`, no una optimización de ingeniería.
+- **Presupuesto fijo de evaluaciones**: no se adopta; la comparación acordada
+  utiliza las generaciones del diseño factorial.
 - **Distribución entre varias máquinas**: el mismo paralelismo por corridas
   se puede repartir entre PCs si el dataset final lo justifica; no fue
   necesario para los tiempos actuales.

@@ -32,7 +32,9 @@ rm -rf "$ROOT/target"
 mkdir -p "$CLASSES"
 "$JAVA_HOME_FIJI/bin/javac" -encoding UTF-8 -source 8 -target 8 \
   -cp "$IJ_JAR" -d "$CLASSES" \
-  "$ROOT/src/main/java/py/fpuna/fusion/plugin/SMPSO_TopHat_Fusion.java"
+  "$ROOT/src/main/java/py/fpuna/fusion/plugin/SMPSO_TopHat_Fusion.java" \
+  "$ROOT/src/main/java/py/fpuna/fusion/plugin/ParetoMetrics.java" \
+  "$ROOT/src/main/java/py/fpuna/fusion/plugin/BatchRunner.java"
 cp "$ROOT/src/main/resources/plugins.config" "$CLASSES/plugins.config"
 "$JAVA_HOME_FIJI/bin/jar" cf "$JAR_FILE" -C "$CLASSES" .
 

@@ -2,65 +2,69 @@
 
 ## Problema
 
-Se optimizan dos variables:
+El experimento principal utiliza pares CT-MRI registrados. Se optimizan tres
+variables:
 
-- `r`: radio entero del elemento estructurante.
-- `m`: peso real aplicado a los detalles de contraste.
+- `r`: radio entero del elemento estructurante, configurado inicialmente en `[1,15]`.
+- `mWTH`: peso real de los detalles claros, en `[0.35,2]`.
+- `mBTH`: peso real de los detalles oscuros, en `[0.35,2]`.
 
-Para cada modalidad se calcula Top-Hat blanco y negro:
+Para cada modalidad se calcula:
 
 ```text
 WTH(I) = I - apertura(I)
 BTH(I) = cierre(I) - I
 ```
 
-La fusión actual es:
+La imagen base y la fusión son:
 
 ```text
-Ifus = Ib + m * max(WTH_IR, WTH_VIS) - m * max(BTH_IR, BTH_VIS)
+Ib   = (ICT + IMRI) / 2
+Ifus = Ib + mWTH * max(WTH_CT, WTH_MRI)
+          - mBTH * max(BTH_CT, BTH_MRI)
 ```
 
-`Ib` puede ser el promedio VIS/IR, VIS o IR. Esta elección debe permanecer fija
-en todos los tratamientos que se comparen.
-
-## Objetivos actuales
+## Objetivos
 
 ```text
-f1 = Entropía de Shannon de Ifus
-f2 = promedio de SSIM(Ifus,VIS) y SSIM(Ifus,IR)
+f1 = Entropía de Shannon de Ifus / 8
+f2 = promedio de SSIM_global(Ifus,CT) y SSIM_global(Ifus,MRI)
 ```
 
-Ambos objetivos se maximizan. La versión inicial calcula entropía sin normalizar
-en un histograma de 256 niveles y SSIM global. El protocolo definitivo debe
-decidir si se reemplazará por entropía normalizada y SSIM local antes de generar
-resultados formales.
+Ambos se maximizan. La entropía usa 256 niveles y queda en `[0,1]`. SSIM usa
+una sola media, varianza y covarianza por imagen, es decir, la variante global.
 
-## SMPSO implementado
+## SMPSO
 
 El núcleo utiliza actualización síncrona, archivo externo acotado por crowding,
-torneo binario para seleccionar líderes, velocidad máxima igual a la mitad del
-rango de cada variable y mutación polinomial. Las velocidades comienzan en cero;
-al alcanzar un límite, la posición se repara y la velocidad se refleja.
+torneo binario de líderes con desempate aleatorio, velocidad máxima igual a la
+mitad del rango de cada variable y mutación polinomial. Las velocidades empiezan
+en cero y se reflejan al alcanzar un límite. La probabilidad de mutación por
+variable es `1/3` porque el vector de decisión tiene tres dimensiones.
 
-La configuración y sus fuentes se detallan en
-`docs/correcciones-smpso-referencia.md`. Estas correcciones no cambian la
-ecuación de fusión ni la definición actual de los objetivos.
+La configuración de referencia se detalla en
+`docs/correcciones-smpso-referencia.md`.
+
+## Evaluación de frentes
+
+Al terminar todas las corridas de un par se construye `P*` con la unión no
+dominada de todos sus frentes. El ideal y nadir experimentales de esa misma
+unión normalizan los objetivos y los transforman a minimización. Cada corrida
+se evalúa mediante HV con referencia `(1.1,1.1)` e IGD convencional contra
+`P*`. Este postprocesamiento no interviene en el movimiento del SMPSO.
 
 ## Supuestos de entrada
 
-- Las imágenes representan el mismo campo de visión.
-- VIS e IR están registradas espacialmente.
+- CT y MRI representan el mismo campo de visión y están registradas.
 - Tienen las mismas dimensiones.
 - Se convierten de manera controlada a escala de grises de 8 bits.
 - No se modifica el preprocesamiento entre configuraciones.
-
-## Alcance
-
-El experimento principal debe utilizar pares visibles e infrarrojos. Los pares
-CT-MRI pueden utilizarse como validación complementaria de fusión multimodal,
-pero no sustituyen la evaluación VIS-IR indicada en el objetivo de la tesis.
+- Los pares se declaran en `experiments/manifests/ct-mri-184-pairs.csv`.
 
 ## Trazabilidad
 
-Toda modificación de fórmula, objetivo, ventana SSIM, normalización o parámetros
-SMPSO debe quedar registrada antes de ejecutar una nueva serie de pruebas.
+Cada corrida registra par, configuración, semilla, tiempo, evaluaciones, commit
+y frente individual. Las semillas se generan de nuevo por ejecución y se
+guardan en `seeds.csv` para repetirla exactamente con `--seeds`. Toda
+modificación de fórmula, objetivo, preprocesamiento o parámetro debe versionarse
+antes de iniciar una serie experimental formal.
