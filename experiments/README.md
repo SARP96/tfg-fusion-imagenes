@@ -14,8 +14,10 @@ etapa formal.
 Cada fila representa un par CT-MRI registrado. Las columnas principales son
 `pair_id`, `ct_path` y `mri_path`; las rutas son relativas a la raíz del
 repositorio para evitar direcciones personales. `BatchRunner --manifest` lee
-este formato directamente y mantiene compatibilidad con las antiguas columnas
-`visible_path` e `infrared_path`.
+este formato directamente. El manifiesto de 184 pares identifica CT-MRI como
+dataset principal. El lector conserva compatibilidad técnica con las antiguas
+columnas `visible_path` e `infrared_path`, aunque VIS-IR queda fuera del alcance
+experimental actual.
 
 ## Semillas
 

@@ -22,12 +22,12 @@ volumen completo; no debe mezclarse con la futura serie formal.
 |---|---|
 | Dataset | `CT-MRI.zip` (fuente externa al repositorio), 184 pares, emparejados por nombre de archivo |
 | Ubicación local | `data/raw/ct/`, `data/raw/mri/` (excluido de Git) |
-| Manifiesto | [experiments/manifests/ct-mri-184-pairs.csv](../experiments/manifests/ct-mri-184-pairs.csv) — columna `dataset=ct-mri-complementario` |
+| Manifiesto | Versión histórica de [experiments/manifests/ct-mri-184-pairs.csv](../experiments/manifests/ct-mri-184-pairs.csv), entonces con `dataset=ct-mri-complementario`; la etiqueta actual cambió al adoptar CT-MRI como alcance exclusivo |
 | Configuración | `experiments/configs/full-factorial.json` (particulas × generaciones completo, 25 configuraciones) |
 | Corridas por configuración | 30 (5.520 corridas por configuración, 138.000 en total) |
 | Semillas | Derivadas automáticamente (`seed_source=derived`), **no** pre-registradas — válido para un piloto, no para una serie formal |
-| Base image (`Ib`) | `to-be-confirmed` en el config → se usó el promedio VIS/IR por defecto (con aviso impreso), porque esa decisión sigue pendiente |
-| Commit base | `c710f4ae8a4265b13bba79200b9a7fbb975ca34c` (el propio `BatchRunner`/`FusionCache` corrieron sin commitear todavía sobre este commit — actualizar este dato cuando se commitee) |
+| Base image (`Ib`) | `to-be-confirmed` en el config histórico: se usó el promedio de CT y MRI por defecto, con aviso impreso; la decisión aún no estaba fijada en esa corrida |
+| Commit base | `c710f4ae8a4265b13bba79200b9a7fbb975ca34c`; `BatchRunner` y `FusionCache` tenían cambios sin confirmar. Un commit posterior no identifica retroactivamente el código exacto de esta corrida |
 | Entorno | 8 hilos, 8 núcleos disponibles, ejecutado desde IntelliJ IDEA 2025.3.2 (JDK 18.0.2.1 en runtime; bytecode compilado a Java 8) |
 | Rango de `r` / `m` | `[1,15]` / `[0.1,2.0]` |
 

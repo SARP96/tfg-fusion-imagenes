@@ -1,4 +1,4 @@
-# SMPSO Top-Hat Image Fusion
+# Optimización multiobjetivo de los parámetros de la transformada Top-Hat para la fusión de imágenes de tomografía computarizada y resonancia magnética mediante SMPSO
 
 Plugin experimental para Fiji/ImageJ destinado a optimizar mediante SMPSO los
 parámetros de la transformada Top-Hat empleados en la fusión multimodal de
@@ -51,6 +51,8 @@ No se implementan SSIM local, Spacing, MI ni `Q^{AB/F}` en la formulación actua
 
 Las correcciones y parámetros adoptados para el algoritmo se explican en
 `docs/correcciones-smpso-referencia.md`.
+El procedimiento para fijar la versión y los datos de la corrida formal está
+en `docs/procedencia-corrida-formal.md`.
 
 ## Requisitos
 
@@ -106,6 +108,22 @@ consume directamente los archivos de `experiments/configs` y
 Top-Hat una sola vez (para cada `r` factible) y la reutiliza en todas las
 configuraciones y corridas de ese par; ver `docs/optimizacion-batch.md` para
 el detalle de esta optimización y de la paralelización.
+
+Para la corrida formal CT-MRI, después de confirmar todos los cambios en Git:
+
+```bash
+./scripts/run-formal.sh --check
+THREADS=8 ./scripts/run-formal.sh
+```
+
+`--check` valida el repositorio, el manifiesto, las pruebas y los hashes sin iniciar el
+batch. El script exige un árbol de trabajo limpio, fija el factorial y los 184
+pares CT-MRI, y registra commit, entorno, hashes, log y semillas. `THREADS`,
+`IJ_JAR` y `OUT_DIR` son las únicas variables de entorno configurables.
+El procedimiento completo está en `docs/procedencia-corrida-formal.md`.
+
+Para pruebas exploratorias o ejecuciones parciales, se puede invocar la clase
+directamente:
 
 ```bash
 mvn -q clean compile

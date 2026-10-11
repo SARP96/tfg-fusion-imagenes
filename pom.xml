@@ -9,8 +9,8 @@
     <version>0.1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>SMPSO Top-Hat Image Fusion</name>
-    <description>Plugin de Fiji/ImageJ para fusion CT-MRI mediante SMPSO y Top-Hat.</description>
+    <name>Fusión CT-MRI mediante SMPSO y Top-Hat</name>
+    <description>Optimización multiobjetivo de los parámetros Top-Hat para la fusión de imágenes de tomografía computarizada y resonancia magnética.</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

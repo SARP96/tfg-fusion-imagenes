@@ -2,7 +2,7 @@
 
 ## Problema
 
-El experimento principal utiliza pares CT-MRI registrados. Se optimizan tres
+El experimento formal utiliza exclusivamente pares CT-MRI registrados. Se optimizan tres
 variables:
 
 - `r`: radio entero del elemento estructurante, configurado inicialmente en `[1,15]`.

@@ -33,7 +33,7 @@ minimización; IGD compara cada frente individual con `P*`.
 
 ## Decisiones adoptadas
 
-- Dataset principal CT-MRI con 184 pares manifestados.
+- Alcance exclusivo CT-MRI con 184 pares manifestados.
 - Base promedio fija.
 - Pesos independientes `mWTH,mBTH` en `[0.35,2]`.
 - Entropía normalizada y SSIM global promedio.

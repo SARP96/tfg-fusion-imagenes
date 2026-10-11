@@ -26,8 +26,8 @@ Todos los cambios relevantes del proyecto se documentarán en este archivo.
   corridas produce el mismo resultado que calcularla de forma independiente.
 - Documento técnico sobre la optimización de la ejecución batch
   (`docs/optimizacion-batch.md`).
-- Manifiesto `experiments/manifests/ct-mri-184-pairs.csv` (184 pares CT-MRI,
-  dataset complementario, no sustituye la evaluación VIS-IR).
+- Manifiesto `experiments/manifests/ct-mri-184-pairs.csv` (184 pares CT-MRI;
+  inicialmente complementario y posteriormente adoptado como dataset principal).
 - Primera corrida batch completa de extremo a extremo: 184 pares × 25
   configuraciones × 30 corridas (138.000 corridas, 0 fallidas). Resultados y
   tiempos reales en `docs/resultados-piloto-ct-mri.md` y
@@ -39,6 +39,9 @@ Todos los cambios relevantes del proyecto se documentarán en este archivo.
 - Pruebas unitarias de normalización, frente de referencia, HV e IGD.
 - Generación aleatoria de semillas por corrida y archivo `seeds.csv` reutilizable
   mediante `--seeds` para repetir los frentes obtenidos.
+- `scripts/run-formal.sh`: entrada única para validar y ejecutar el factorial
+  CT-MRI desde un commit limpio, con huellas de insumos, entorno, log y
+  comprobación de las 138.000 corridas al finalizar.
 
 ### Cambiado
 
@@ -62,6 +65,9 @@ Todos los cambios relevantes del proyecto se documentarán en este archivo.
   completo y calcula los indicadores al terminar sus corridas.
 - Las semillas faltantes en un archivo indicado con `--seeds` ahora producen un
   error explícito en vez de sustituirse por valores derivados.
+- El título y la documentación del alcance se actualizan para CT-MRI.
+- El manifiesto identifica los 184 pares como dataset principal para la próxima
+  corrida formal; la versión anterior permanece recuperable en Git.
 
 ## [0.1.0] - pendiente
 
